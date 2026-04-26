@@ -1,0 +1,27 @@
+{
+  "name": "zhihu-tools",
+  "version": "0.1.0",
+  "description": "知乎 CLI 工具 & MCP Server - 搜索、浏览知乎内容",
+  "bin": {
+    "zhihu": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "cli": "node ./dist/cli/index.js",
+    "mcp": "node ./dist/mcp/index.js"
+  },
+  "dependencies": {
+    "axios": "^0.24.0",
+    "commander": "^14.0.3",
+    "form-urlencoded": "^4.1.1",
+    "md5": "^2.2.1",
+    "tough-cookie": "^3.0.1",
+    "ws": "^8.20.0",
+    "zhihu-encrypt": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
+  }
+}

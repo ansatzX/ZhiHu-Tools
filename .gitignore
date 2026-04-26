@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.js.map
+*.tsbuildinfo
+
+# Environment files (may contain cookies/tokens/secrets)
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
