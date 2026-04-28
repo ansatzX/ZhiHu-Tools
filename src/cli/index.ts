@@ -33,61 +33,35 @@ program
 
 program
   .command("login")
-  .description("登录知乎（浏览器登录）")
-  .option("-p, --password", "使用密码登录")
-  .action(async (options) => {
+  .description("打开专用浏览器窗口登录知乎")
+  .action(async () => {
     const client = createClient();
     await runWithBrowser(client, async () => {
-      if (options.password) {
+      await client.auth.loginByBrowser(async () => {
         const readline = await import("readline");
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,
         });
-        const phone = await new Promise<string>((r) => {
-          rl.question("手机号: ", (a) => {
+        await new Promise<void>((resolve) => {
+          rl.question("请在浏览器窗口中完成登录，然后按回车继续...", () => {
             rl.close();
-            r(a.trim());
+            resolve();
           });
         });
-        const password = await new Promise<string>((r) => {
-          const rl2 = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-          });
-          rl2.question("密码: ", (a) => {
-            rl2.close();
-            r(a.trim());
-          });
-        });
-        const profile = await client.auth.loginByPassword(phone, password);
-        console.log(`登录成功！你好, ${profile.name}`);
-      } else {
-        await client.auth.loginByBrowser(async () => {
-          const readline = await import("readline");
-          const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-          });
-          await new Promise<void>((resolve) => {
-            rl.question("", () => {
-              rl.close();
-              resolve();
-            });
-          });
-        });
-        console.log("登录成功！");
-      }
+      });
+      console.log("登录成功！");
     });
   });
 
 program
   .command("logout")
-  .description("退出登录")
+  .description("退出登录并清除浏览器中的知乎 Cookie")
   .action(async () => {
     const client = createClient();
-    client.auth.logout();
+    await client.auth.logout();
     console.log("已退出登录");
+    await client.stopBrowser();
   });
 
 program
@@ -129,6 +103,8 @@ program
         question: "问题",
         answer: "回答",
         article: "文章",
+        user: "用户",
+        pin: "想法",
       };
       results.forEach((item: any, i: number) => {
         const obj = item.object || item;
@@ -164,7 +140,6 @@ program
         const answerCount = story.target?.answer_count
           ? ` ${story.target.answer_count} 回答`
           : "";
-        // 从 target.url 提取问题 ID，格式: https://api.zhihu.com/questions/{id}
         const qid = story.target?.url?.match(/\/questions\/(\d+)/)?.[1];
         console.log(`${i + 1}. ${title} ${trend}`);
         if (excerpt) console.log(`   ${excerpt.slice(0, 80)}`);
@@ -211,12 +186,12 @@ program
     const client = createClient();
     await runWithBrowser(client, async () => {
       if (!(await ensureLoggedIn(client))) return;
-      // 从 URL 中提取纯数字 ID（保持字符串，避免 parseInt 丢失精度）
       const qid = (id.match(/(\d+)/)?.[1] || id).replace(/^0+/, "");
       const question = await client.feed.getQuestionDetail(qid);
       console.log(`\n问题: ${question.title}`);
       console.log(`描述: ${question.excerpt}`);
       console.log(`回答数: ${question.answer_count}`);
+      if (question.follower_count) console.log(`关注者: ${question.follower_count}`);
       console.log();
       if (parseInt(options.answers) > 0) {
         const answers = await client.feed.getQuestionAnswers(
@@ -225,9 +200,11 @@ program
           parseInt(options.answers)
         );
         answers.forEach((a: any, i: number) => {
-          console.log(`--- 回答 ${i + 1} (${a.voteup_count} 赞同) ---`);
-          const text = (a.excerpt || a.content || "").replace(/<[^>]+>/g, "");
-          console.log(text.slice(0, 300));
+          const comments = a.comment_count != null ? ` · ${a.comment_count} 评论` : "";
+          console.log(`--- 回答 ${i + 1} (${a.voteup_count ?? 0} 赞同${comments}) ---`);
+          if (a.url) console.log(`链接: ${a.url}`);
+          const text = (a.content || a.excerpt || "").replace(/<[^>]+>/g, "");
+          console.log(text);
           console.log();
         });
       }
@@ -238,7 +215,8 @@ program
   .command("article")
   .description("查看文章详情")
   .argument("<id>", "文章 ID 或链接 (如 https://zhuanlan.zhihu.com/p/123456)")
-  .action(async (id) => {
+  .option("-c, --comments <count>", "显示评论数", "0")
+  .action(async (id, options) => {
     const client = createClient();
     await runWithBrowser(client, async () => {
       if (!(await ensureLoggedIn(client))) return;
@@ -246,13 +224,23 @@ program
       const article = await client.feed.getArticleDetail(articleId);
       console.log(`\n标题: ${article.title}`);
       console.log(`作者: ${article.author?.name || "匿名"}`);
-      console.log(`赞同: ${article.voteup_count}`);
-      console.log(`评论: ${article.comment_count}`);
+      if (article.voteup_count != null) console.log(`赞同: ${article.voteup_count}`);
+      if (article.comment_count != null) console.log(`评论: ${article.comment_count}`);
       const text = (article.content || article.excerpt || "").replace(
         /<[^>]+>/g,
         ""
       );
-      console.log(`\n${text.slice(0, 500)}...`);
+      console.log(`\n${text}${article.content_truncated ? "..." : ""}`);
+      const commentLimit = parseInt(options.comments || "0");
+      if (commentLimit > 0) {
+        const comments = await client.feed.getArticleComments(articleId, commentLimit);
+        if (comments.length) console.log("\n========== 评论 ==========");
+        comments.forEach((c: any, i: number) => {
+          const author = c.author?.member?.name || c.author?.name || "匿名";
+          const content = (c.content || "").replace(/<[^>]+>/g, "");
+          console.log(`${i + 1}. ${author}: ${content}`);
+        });
+      }
     });
   });
 

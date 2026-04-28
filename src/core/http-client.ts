@@ -1,3 +1,9 @@
+/**
+ * @deprecated 此模块为旧版 axios/cookie 路径，已不推荐使用。
+ * 当前主线方案为 BrowserHttpClient + Chrome CDP（见 browser-http-client.ts）。
+ * 纯 Node HTTP 客户端会被知乎 TLS/浏览器指纹识别拦截。
+ * 此模块仅保留用于参考和向后兼容。
+ */
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from "axios";
 import { CookieJar } from "tough-cookie";
 import { FileCookieStore } from "./cookie-store";
@@ -5,6 +11,7 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 
+/** @deprecated 使用 BrowserHttpClient 替代 */
 export class ZhihuHttpClient {
   public xsrfToken: string;
   private jar: CookieJar;

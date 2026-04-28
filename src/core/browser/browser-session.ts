@@ -39,8 +39,8 @@ export class BrowserSession {
       try { fs.unlinkSync(path.join(profileDir, lock)); } catch {}
     }
 
-    // 随机端口，避免冲突
-    this.port = 9222 + Math.floor(Math.random() * 1000);
+    // 使用系统分配的空闲端口
+    this.port = await findFreePort();
     const url = targetUrl || "https://www.zhihu.com/";
 
     // 启动 Chrome（用户可见窗口，用于完成登录和后续请求）
@@ -58,33 +58,64 @@ export class BrowserSession {
       { stdio: "ignore" }
     );
 
-    this.chromeProcess.on("exit", (code) => {
-      this.started = false;
-      this.chromeProcess = null;
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+
+      const settle = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (err) {
+          this.started = false;
+          this.chromeProcess = null;
+          reject(err);
+        } else {
+          resolve();
+        }
+      };
+
+      this.chromeProcess!.on("exit", (code) => {
+        this.started = false;
+        this.chromeProcess = null;
+        if (!settled) {
+          settle(new BrowserSessionError(
+            `Chrome 进程意外退出 (code: ${code})`,
+            ErrorCodes.CHROME_LAUNCH_FAILED
+          ));
+        }
+      });
+
+      this.chromeProcess!.on("error", (err) => {
+        settle(new BrowserSessionError(
+          `Chrome 启动失败: ${err.message}`,
+          ErrorCodes.CHROME_LAUNCH_FAILED
+        ));
+      });
+
+      // 等待 Chrome 就绪，然后连接 CDP
+      this.waitForPort()
+        .then(() => this.getOrCreatePage(url))
+        .then((wsUrl) => {
+          this.pageWsUrl = wsUrl;
+          return this.cdp.connect(wsUrl);
+        })
+        .then(() => {
+          this.started = true;
+          return this.waitForPageLoad();
+        })
+        .then(() => settle())
+        .catch((err) => settle(err));
     });
+  }
 
-    this.chromeProcess.on("error", (err) => {
-      this.started = false;
-      this.chromeProcess = null;
-      throw new BrowserSessionError(
-        `Chrome 启动失败: ${err.message}`,
-        ErrorCodes.CHROME_LAUNCH_FAILED
-      );
-    });
-
-    // 等待 Chrome 就绪
-    await this.waitForPort();
-
-    // 获取已有的页面或创建新页面
-    this.pageWsUrl = await this.getOrCreatePage(url);
-
-    // 连接 CDP WebSocket
-    await this.cdp.connect(this.pageWsUrl);
-
-    // 标记已启动，防止 waitForPageLoad 里的 evaluate 递归调用 start
-    this.started = true;
-
-    // 等待页面完全加载
+  /**
+   * 导航到指定 URL。如果浏览器尚未启动，则启动浏览器；如果已启动，则复用当前页面。
+   */
+  async navigate(url: string): Promise<void> {
+    if (!this.started) {
+      await this.start(url);
+      return;
+    }
+    await this.cdp.send("Page.navigate", { url });
     await this.waitForPageLoad();
   }
 
@@ -112,14 +143,12 @@ export class BrowserSession {
     }
 
     // 确保页面在正确的域上（SameSite cookie 需要同域请求）
-    // 只检查域名，不导航到根路径，避免打断后续页面导航
     const targetDomain = new URL(url).hostname;
     try {
       const currentUrl = await this.evaluate<string>("window.location.href").catch(() => "");
       if (currentUrl) {
         const currentDomain = new URL(currentUrl).hostname;
         if (currentDomain !== targetDomain) {
-          // 域名不匹配，导航到目标域的根路径
           await this.cdp.send("Page.navigate", { url: `https://${targetDomain}/` });
           await this.waitForPageLoad();
         }
@@ -166,7 +195,6 @@ export class BrowserSession {
       await this.start();
     }
 
-    // 确保 Network 域已激活
     try {
       await this.cdp.send("Network.enable");
     } catch {
@@ -186,6 +214,38 @@ export class BrowserSession {
   }
 
   /**
+   * 清除浏览器中所有 cookie
+   */
+  async clearBrowserCookies(): Promise<void> {
+    // 如果浏览器未启动，先启动；否则无法通过 CDP 清除 cookie
+    if (!this.started) {
+      await this.start("https://www.zhihu.com/");
+    }
+
+    try {
+      await this.cdp.send("Network.enable");
+    } catch {
+      // already enabled
+    }
+
+    try {
+      await this.cdp.send("Network.clearBrowserCookies");
+    } catch {
+      // fallback: Network.clearBrowserCookies 可能不可用
+    }
+
+    // 同时清除知乎域的存储（localStorage, sessionStorage 等）
+    try {
+      await this.cdp.send("Storage.clearDataForOrigin", {
+        origin: "https://www.zhihu.com",
+        storageTypes: "all",
+      });
+    } catch {
+      // Storage 域可能不可用
+    }
+  }
+
+  /**
    * 发送原始 CDP 命令（供 service 层使用）
    */
   async sendCdp(method: string, params?: any): Promise<any> {
@@ -198,7 +258,6 @@ export class BrowserSession {
    */
   async checkAuthenticated(): Promise<boolean> {
     const result = await this.fetch("https://www.zhihu.com/api/v4/me");
-    // 已登录时返回 200 + id，未登录时返回各种 3xx/4xx
     return result.status === 200 && result.data?.id != null;
   }
 
@@ -230,19 +289,6 @@ export class BrowserSession {
 
   // -- private helpers --
 
-  private async ensureDomain(domain: string): Promise<void> {
-    // 检查当前页面域名
-    const currentUrl = await this.evaluate<string>("window.location.href").catch(() => "");
-    if (currentUrl && new URL(currentUrl).hostname === domain) {
-      return; // 已经在正确的域上
-    }
-
-    // 导航到目标域名
-    const baseUrl = `https://${domain}/`;
-    await this.cdp.send("Page.navigate", { url: baseUrl });
-    await this.waitForPageLoad();
-  }
-
   private waitForPort(timeoutMs = 15000): Promise<void> {
     return new Promise((resolve, reject) => {
       const start = Date.now();
@@ -272,7 +318,7 @@ export class BrowserSession {
   }
 
   private waitForPageLoad(timeoutMs = 10000): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, _reject) => {
       const start = Date.now();
       const check = async () => {
         try {
@@ -280,7 +326,6 @@ export class BrowserSession {
             "document.readyState"
           ).catch(() => "");
           if (ready === "complete" || ready === "interactive") {
-            // 再等一帧确保渲染完成
             setTimeout(resolve, 300);
             return;
           }
@@ -288,12 +333,12 @@ export class BrowserSession {
           // page might be loading
         }
         if (Date.now() - start > timeoutMs) {
-          resolve(); // timeout, don't reject
+          resolve(); // timeout, don't block startup
         } else {
           setTimeout(check, 300);
         }
       };
-      setTimeout(check, 500); // give the page a moment to start loading
+      setTimeout(check, 500);
     });
   }
 
@@ -302,7 +347,6 @@ export class BrowserSession {
     try {
       const resp = await fetch(`http://127.0.0.1:${this.port}/json`);
       const pages = await resp.json() as any[];
-      // 优先找匹配 URL 的页面，或取第一个
       const matchedPage = pages.find(
         (p: any) => p.url && p.url.includes("zhihu.com")
       );
@@ -327,4 +371,23 @@ export class BrowserSession {
     }
     return pageInfo.webSocketDebuggerUrl;
   }
+}
+
+/**
+ * 使用系统分配的空闲端口
+ */
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (addr && typeof addr === "object") {
+        const port = addr.port;
+        server.close(() => resolve(port));
+      } else {
+        server.close(() => reject(new Error("无法获取空闲端口")));
+      }
+    });
+    server.on("error", reject);
+  });
 }

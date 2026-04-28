@@ -1,3 +1,4 @@
+import WebSocketImpl = require("ws");
 import { BrowserSessionError, ErrorCodes } from "./errors";
 
 interface PendingRequest {
@@ -6,8 +7,7 @@ interface PendingRequest {
   timer: NodeJS.Timeout;
 }
 
-// Node.js v24 原生 WebSocket 的构造类型在 ES2020 lib 下不可用
-const NativeWebSocket: any = WebSocket;
+const NativeWebSocket: any = WebSocketImpl;
 
 /**
  * 精简的 Chrome DevTools Protocol 客户端

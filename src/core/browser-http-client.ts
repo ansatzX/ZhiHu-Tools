@@ -13,9 +13,6 @@ export class BrowserHttpClient {
     this.session = session || new BrowserSession();
   }
 
-  /**
-   * 确保浏览器已启动
-   */
   async ensureStarted(): Promise<void> {
     if (!this.session.isRunning()) {
       await this.session.start();
@@ -28,7 +25,7 @@ export class BrowserHttpClient {
     const result = await this.session.fetch(fullUrl, {
       headers: config?.headers,
     });
-    this.updateXsrfToken();
+    await this.updateXsrfToken();
     return this.handleResponse<T>(result, url);
   }
 
@@ -56,7 +53,7 @@ export class BrowserHttpClient {
       headers,
       body,
     });
-    this.updateXsrfToken();
+    await this.updateXsrfToken();
     return this.handleResponse<T>(result, url);
   }
 
@@ -96,12 +93,9 @@ export class BrowserHttpClient {
         headers: result.headers,
       };
     }
-    return result.data;
+    return this.handleResponse(result, url);
   }
 
-  /**
-   * 获取指定域名的 cookie 字符串（用于搜索签名）
-   */
   async getCookieStringForDomain(domain: string = "zhihu.com"): Promise<string> {
     await this.ensureStarted();
     const cookies = await this.session.getAllCookies();
@@ -111,9 +105,6 @@ export class BrowserHttpClient {
       .join("; ");
   }
 
-  /**
-   * 获取 document.cookie（仅非 httpOnly 的 cookie）
-   */
   async getDocumentCookie(): Promise<string> {
     await this.ensureStarted();
     return this.session.evaluate<string>("document.cookie");
@@ -123,8 +114,9 @@ export class BrowserHttpClient {
     // 浏览器管理自己的 cookie，Node 端 setCookie 无意义
   }
 
-  clearCookies() {
+  async clearCookies() {
     this.xsrfToken = undefined;
+    await this.session.clearBrowserCookies();
   }
 
   clearCache() {
@@ -141,20 +133,76 @@ export class BrowserHttpClient {
   }
 
   private handleResponse<T>(result: { status: number; data: any }, url?: string): T {
-    if (result.status === 0) {
-      throw new Error(`网络请求失败: ${url || "unknown"}`);
+    const status = result.status;
+
+    // 网络错误
+    if (status === 0) {
+      throw new BrowserSessionError(
+        `网络请求失败: ${url || "unknown"}`,
+        ErrorCodes.CDP_CONNECT_FAILED
+      );
     }
 
-    if (result.status === 403) {
+    // 检测 HTML 响应（登录页、验证码页、风控页）
+    if (typeof result.data === "string" && status === 200) {
+      const html = result.data as string;
+      if (html.includes("signin") || html.includes("sign_in") || html.includes("login")) {
+        throw new BrowserSessionError(
+          "请求返回登录页，可能未登录或登录已过期",
+          ErrorCodes.LOGIN_REQUIRED
+        );
+      }
+      if (html.includes("captcha") || html.includes("unhuman") || html.includes("验证")) {
+        throw new BrowserSessionError(
+          "触发知乎人机验证，请在浏览器中手动完成验证",
+          ErrorCodes.HUMAN_VERIFICATION_REQUIRED
+        );
+      }
+    }
+
+    // 401: 未授权/未登录
+    if (status === 401) {
+      throw new BrowserSessionError(
+        "未登录或登录已过期，请运行 zhihu login 重新登录",
+        ErrorCodes.LOGIN_REQUIRED
+      );
+    }
+
+    // 403: 禁止访问
+    if (status === 403) {
       const bodyStr = typeof result.data === "string" ? result.data : JSON.stringify(result.data);
       if (bodyStr.includes("unhuman") || bodyStr.includes("captcha")) {
         throw new BrowserSessionError(
-          "人机验证拦截: 请尝试重新登录 (zhihu login)",
+          "人机验证拦截: 请在浏览器中手动完成验证",
           ErrorCodes.HUMAN_VERIFICATION_REQUIRED
         );
       }
       throw new BrowserSessionError(
-        `知乎 API 返回 403`,
+        `知乎 API 返回 403${url ? `: ${url}` : ""}`,
+        ErrorCodes.UPSTREAM_FORBIDDEN
+      );
+    }
+
+    // 404: 资源不存在
+    if (status === 404) {
+      throw new BrowserSessionError(
+        `请求的资源不存在 (404)${url ? `: ${url}` : ""}`,
+        ErrorCodes.UPSTREAM_FORBIDDEN
+      );
+    }
+
+    // 429: 请求过于频繁
+    if (status === 429) {
+      throw new BrowserSessionError(
+        "请求过于频繁，触发知乎速率限制，请稍后再试",
+        ErrorCodes.UPSTREAM_FORBIDDEN
+      );
+    }
+
+    // 5xx: 服务器错误
+    if (status >= 500) {
+      throw new BrowserSessionError(
+        `知乎服务器错误 (${status})${url ? `: ${url}` : ""}`,
         ErrorCodes.UPSTREAM_FORBIDDEN
       );
     }

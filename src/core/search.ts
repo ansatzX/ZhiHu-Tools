@@ -1,4 +1,5 @@
 import { ZhihuSearchResult } from "./types";
+import { BrowserSessionError, ErrorCodes } from "./browser/errors";
 
 const TYPE_MAP: Record<string, string> = {
   question: "question",
@@ -52,36 +53,32 @@ export class SearchService {
     limit: number
   ): Promise<ZhihuSearchResult[]> {
     const searchType = TYPE_MAP[type] || "content";
-    const url = `https://www.zhihu.com/search?type=${searchType}&q=${encodeURIComponent(keyword)}`;
+    const safeUrl = JSON.stringify(`https://www.zhihu.com/search?type=${searchType}&q=${encodeURIComponent(keyword)}`);
+    const safeLimit = JSON.stringify(limit);
 
-    // 导航到搜索页
-    await session.evaluate(`window.location.href = ${JSON.stringify(url)}`);
+    await session.evaluate(`window.location.href = ${safeUrl}`);
 
-    // 等待搜索结果渲染
-    for (let i = 0; i < 30; i++) {
-      await sleep(500);
-      const count: number = await session.evaluate(
-        "document.querySelectorAll('.Card.SearchResult-Card').length"
-      ).catch(() => 0);
-      if (count > 0) break;
-    }
+    // 等待搜索结果渲染（超时抛错）
+    await waitForSearchResults(session);
 
-    // 提取结果
     const raw: any[] = await session.evaluate(`
       (() => {
-        return Array.from(document.querySelectorAll('.Card.SearchResult-Card')).slice(0, ${limit}).map(card => {
+        return Array.from(document.querySelectorAll('.Card.SearchResult-Card')).slice(0, ${safeLimit}).map(card => {
           const titleEl = card.querySelector('.ContentItem-title');
           const linkEl = titleEl?.querySelector('a');
           const richContent = card.querySelector('.RichContent');
           const excerptEl = richContent?.querySelector('.RichText') || card;
 
-          // 判断类型
+          // 根据 URL 路径判断类型
+          const linkHref = linkEl?.getAttribute('href') || '';
           let itemType = 'answer';
-          if (card.querySelector('.ArticleItem')) itemType = 'article';
-          else if (card.querySelector('.QuestionItem')) itemType = 'question';
+          if (linkHref.startsWith('/question/')) itemType = 'question';
+          else if (linkHref.startsWith('/p/') || linkHref.startsWith('/zhanlan/')) itemType = 'article';
+          else if (linkHref.startsWith('/people/') || linkHref.startsWith('/org/')) itemType = 'user';
+          else if (linkHref.startsWith('/pin/')) itemType = 'pin';
 
           const title = linkEl?.textContent?.trim() || titleEl?.textContent?.trim() || '';
-          const link = linkEl?.getAttribute('href') || '';
+          const link = linkHref || '';
           const excerpt = excerptEl?.textContent?.trim()?.slice(0, 300) || '';
 
           return {
@@ -110,6 +107,22 @@ export class SearchService {
     }
     return "";
   }
+}
+
+async function waitForSearchResults(session: any, timeoutMs = 15000): Promise<void> {
+  const start = Date.now();
+  for (let i = 0; i < 60; i++) {
+    const count: number = await session.evaluate(
+      "document.querySelectorAll('.Card.SearchResult-Card').length"
+    ).catch(() => 0);
+    if (count > 0) return;
+    if (Date.now() - start > timeoutMs) break;
+    await sleep(500);
+  }
+  throw new BrowserSessionError(
+    "搜索页面加载超时: 可能触发知乎风控或需要登录",
+    ErrorCodes.CDP_CONNECT_FAILED
+  );
 }
 
 function sleep(ms: number): Promise<void> {

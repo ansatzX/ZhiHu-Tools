@@ -98,17 +98,32 @@ export class AuthService {
   }
 
   async logout() {
-    this.client.clearCookies();
+    await this.client.clearCookies();
+  }
+
+  async openLoginPage(): Promise<void> {
+    const browserSession = this.client.session;
+    if (browserSession) {
+      if (typeof browserSession.navigate === "function") {
+        await browserSession.navigate("https://www.zhihu.com/signin");
+      } else {
+        await browserSession.start("https://www.zhihu.com/signin");
+      }
+    }
   }
 
   async loginByBrowser(onPrompt?: () => Promise<void>): Promise<ZhihuProfile> {
-    this.client.clearCookies();
+    await this.client.clearCookies();
 
     const browserSession = this.client.session;
 
     if (browserSession) {
       // CDP 浏览器模式：在控制的 Chrome 中打开登录页
-      await browserSession.start("https://www.zhihu.com/signin");
+      if (typeof browserSession.navigate === "function") {
+        await browserSession.navigate("https://www.zhihu.com/signin");
+      } else {
+        await browserSession.start("https://www.zhihu.com/signin");
+      }
 
       if (onPrompt) {
         console.log("请在浏览器窗口中完成登录，然后回到终端按回车继续...");
@@ -142,17 +157,11 @@ export class AuthService {
     return profile;
   }
 
-  // Keep original QR login method signature for CLI compatibility
-  async loginByQRCode(
-    onQRCode: (qrDataUrl: string) => void,
-    onQRCodeLink?: (link: string) => void,
-    onAwaitScan?: () => Promise<void>
-  ): Promise<ZhihuProfile> {
-    return this.loginByBrowser(
-      typeof onAwaitScan === "function" ? onAwaitScan : undefined
-    );
+  async loginByBrowserInteractive(onPrompt?: () => Promise<void>): Promise<ZhihuProfile> {
+    return this.loginByBrowser(onPrompt);
   }
 
+  /** @deprecated 密码登录在浏览器模式下不可用，请使用 loginByBrowser */
   async loginByPassword(
     phoneNumber: string,
     password: string

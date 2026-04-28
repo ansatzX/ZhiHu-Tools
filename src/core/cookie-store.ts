@@ -1,3 +1,4 @@
+/** @deprecated 旧版 cookie 文件存储，主线已改用 Chrome profile。见 browser-session.ts */
 import * as fs from "fs";
 import { Store, Cookie } from "tough-cookie";
 
