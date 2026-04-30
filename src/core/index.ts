@@ -14,9 +14,9 @@ export class ZhihuClient {
   public search: SearchService;
   public browser: BrowserSession | null = null;
 
-  constructor(cookiePath?: string, useBrowser: boolean = false) {
+  constructor(cookiePath?: string, useBrowser: boolean = false, browserOptions?: { headless?: boolean }) {
     if (useBrowser) {
-      this.browser = new BrowserSession();
+      this.browser = new BrowserSession(browserOptions);
       this.http = new BrowserHttpClient(this.browser);
     } else {
       this.http = new ZhihuHttpClient(cookiePath);
@@ -29,7 +29,6 @@ export class ZhihuClient {
   async stopBrowser() {
     if (this.browser) {
       await this.browser.stop();
-      this.browser = null;
     }
   }
 }

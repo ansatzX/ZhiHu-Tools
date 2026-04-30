@@ -98,7 +98,7 @@ export class SearchService {
       })()
     `);
 
-    return raw as ZhihuSearchResult[];
+    return raw.map(normalizeSearchResult).filter((item): item is ZhihuSearchResult => item !== null);
   }
 
   private async getCookieString(): Promise<string> {
@@ -109,9 +109,69 @@ export class SearchService {
   }
 }
 
+function normalizeSearchResult(item: any): ZhihuSearchResult | null {
+  const excerpt = String(item?.excerpt || item?.highlight?.description || item?.object?.excerpt || "").trim();
+  const title = firstSentence(
+    String(item?.title || item?.highlight?.title || item?.object?.title || excerpt || "").trim()
+  );
+  if (!title) return null;
+
+  const link = normalizeZhihuUrl(String(item?.link || item?.object?.url || ""));
+  const objectUrl = normalizeZhihuUrl(String(item?.object?.url || link));
+  return {
+    ...item,
+    title,
+    link,
+    excerpt,
+    highlight: {
+      ...(item?.highlight || {}),
+      title,
+      description: excerpt,
+    },
+    object: {
+      ...(item?.object || {}),
+      title,
+      excerpt,
+      url: objectUrl,
+    },
+  } as ZhihuSearchResult;
+}
+
+function firstSentence(text: string): string {
+  return text.split(/[。！？\n]/)[0]?.trim().slice(0, 120) || "";
+}
+
+function normalizeZhihuUrl(url: string): string {
+  if (!url) return "";
+  if (url.startsWith("//")) return `https:${url}`;
+  if (url.startsWith("http")) return url;
+  return `https://www.zhihu.com${url.startsWith("/") ? "" : "/"}${url}`;
+}
+
 async function waitForSearchResults(session: any, timeoutMs = 15000): Promise<void> {
   const start = Date.now();
   for (let i = 0; i < 60; i++) {
+    const pageInfo: { url: string; title: string; bodyText: string } = await session.evaluate(`
+      (() => ({
+        url: window.location.href,
+        title: document.title || '',
+        bodyText: document.body?.innerText?.slice(0, 500) || '',
+      }))()
+    `).catch(() => ({ url: "", title: "", bodyText: "" }));
+    const text = `${pageInfo.url}\n${pageInfo.title}\n${pageInfo.bodyText}`;
+    if (/captcha|unhuman|验证|人机/i.test(text)) {
+      throw new BrowserSessionError(
+        "触发知乎人机验证，请在浏览器中手动完成验证",
+        ErrorCodes.HUMAN_VERIFICATION_REQUIRED
+      );
+    }
+    if (/signin|login|登录/i.test(text)) {
+      throw new BrowserSessionError(
+        "当前页面需要登录，请先完成知乎登录",
+        ErrorCodes.LOGIN_REQUIRED
+      );
+    }
+
     const count: number = await session.evaluate(
       "document.querySelectorAll('.Card.SearchResult-Card').length"
     ).catch(() => 0);

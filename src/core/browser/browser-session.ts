@@ -18,16 +18,19 @@ export class BrowserSession {
   private port: number;
   private started = false;
   private pageWsUrl: string = "";
+  private headless: boolean;
+  private currentHeadless: boolean | null = null;
 
-  constructor() {
+  constructor(options?: { headless?: boolean }) {
     this.cdp = new CdpClient();
     this.port = 0;
+    this.headless = options?.headless ?? true;
   }
 
   /**
    * 启动 Chrome 浏览器并连接 CDP
    */
-  async start(targetUrl?: string): Promise<void> {
+  async start(targetUrl?: string, options?: { headless?: boolean }): Promise<void> {
     if (this.started) return;
 
     const chromePath = findChrome();
@@ -40,21 +43,27 @@ export class BrowserSession {
     }
 
     // 使用系统分配的空闲端口
-    this.port = await findFreePort();
+    this.port = await this.findFreePort();
     const url = targetUrl || "https://www.zhihu.com/";
+    const headless = options?.headless ?? this.headless;
 
-    // 启动 Chrome（用户可见窗口，用于完成登录和后续请求）
+    const args = [
+      `--user-data-dir=${profileDir}`,
+      `--remote-debugging-port=${this.port}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-extensions",
+      "--disable-sync",
+    ];
+    if (headless) {
+      args.push("--headless=new", "--disable-gpu");
+    }
+    args.push(url);
+
+    // 默认以 headless 启动；登录入口会显式使用可见窗口。
     this.chromeProcess = spawn(
       chromePath,
-      [
-        `--user-data-dir=${profileDir}`,
-        `--remote-debugging-port=${this.port}`,
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-extensions",
-        "--disable-sync",
-        url,
-      ],
+      args,
       { stdio: "ignore" }
     );
 
@@ -100,6 +109,7 @@ export class BrowserSession {
         })
         .then(() => {
           this.started = true;
+          this.currentHeadless = headless;
           return this.waitForPageLoad();
         })
         .then(() => settle())
@@ -110,13 +120,25 @@ export class BrowserSession {
   /**
    * 导航到指定 URL。如果浏览器尚未启动，则启动浏览器；如果已启动，则复用当前页面。
    */
-  async navigate(url: string): Promise<void> {
+  async navigate(url: string, options?: { headless?: boolean }): Promise<void> {
     if (!this.started) {
-      await this.start(url);
+      await this.start(url, options);
+      return;
+    }
+    if (options?.headless === false && this.currentHeadless === true) {
+      await this.stop();
+      await this.start(url, options);
       return;
     }
     await this.cdp.send("Page.navigate", { url });
     await this.waitForPageLoad();
+  }
+
+  /**
+   * 打开可见浏览器页面，供登录、验证码和风控处理使用。
+   */
+  async openVisiblePage(url = "https://www.zhihu.com/"): Promise<void> {
+    await this.navigate(url, { headless: false });
   }
 
   /**
@@ -267,10 +289,11 @@ export class BrowserSession {
   async stop(): Promise<void> {
     this.cdp.close();
     if (this.chromeProcess && !this.chromeProcess.killed) {
-      this.chromeProcess.kill("SIGTERM");
+      const chromeProcess = this.chromeProcess;
+      chromeProcess.kill("SIGTERM");
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(resolve, 3000);
-        this.chromeProcess!.on("exit", () => {
+        chromeProcess.on("exit", () => {
           clearTimeout(timeout);
           resolve();
         });
@@ -278,18 +301,25 @@ export class BrowserSession {
     }
     this.started = false;
     this.chromeProcess = null;
+    this.currentHeadless = null;
   }
 
   /**
    * 浏览器是否正在运行
    */
   isRunning(): boolean {
+    if (this.chromeProcess?.exitCode !== null || this.chromeProcess?.signalCode !== null) {
+      this.started = false;
+      this.chromeProcess = null;
+      this.currentHeadless = null;
+      return false;
+    }
     return this.started && this.chromeProcess !== null && !this.chromeProcess.killed;
   }
 
   // -- private helpers --
 
-  private waitForPort(timeoutMs = 15000): Promise<void> {
+  protected waitForPort(timeoutMs = 15000): Promise<void> {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       const tryConnect = () => {
@@ -317,7 +347,11 @@ export class BrowserSession {
     });
   }
 
-  private waitForPageLoad(timeoutMs = 10000): Promise<void> {
+  protected findFreePort(): Promise<number> {
+    return findFreePort();
+  }
+
+  protected waitForPageLoad(timeoutMs = 10000): Promise<void> {
     return new Promise((resolve, _reject) => {
       const start = Date.now();
       const check = async () => {
@@ -342,7 +376,7 @@ export class BrowserSession {
     });
   }
 
-  private async getOrCreatePage(url: string): Promise<string> {
+  protected async getOrCreatePage(url: string): Promise<string> {
     // 尝试获取已有页面
     try {
       const resp = await fetch(`http://127.0.0.1:${this.port}/json`);

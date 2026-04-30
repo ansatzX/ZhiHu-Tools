@@ -30,10 +30,11 @@ npx zhihu --help
 ~/.zhihu-tools/chrome-profile
 ```
 
-工具不再使用 cookie 文件，也不支持密码直登。CLI/MCP 会打开一个可见的专用 Chrome 窗口，你需要在该窗口中手动完成知乎登录、验证码或风控校验。
+工具不再使用 cookie 文件，也不支持密码直登。登录、验证码和风控校验需要一个可见的专用 Chrome 窗口；搜索、热榜、问题、文章等普通读取操作默认通过 headless Chrome/CDP 执行，只有检测到需要人工处理的人机验证/风控时才会自动弹出可见窗口。
 
 - 登录态在 CLI 和 MCP Server 之间共享（共用同一个 profile）
 - 退出登录会清除该 profile 中的知乎 Cookie/存储
+- MCP 登录成功后会关闭可见浏览器；后续普通工具调用会复用同一 profile 并以 headless 模式启动
 - 纯 HTTP 密码登录已移除，避免被知乎风控直接阻断
 
 ## CLI 使用
@@ -95,6 +96,8 @@ npx zhihu article 2030369875114336526 -c 2
 
 ## MCP Server
 
+MCP 模式下，除 `zhihu_open_login_page` 以及需要用户手动处理的登录/风控场景外，工具默认不会弹出 Chrome 窗口。普通工具调用会在后台启动 headless Chrome，使用 `~/.zhihu-tools/chrome-profile` 中已有的登录态读取数据；如果明确检测到人机验证，会自动打开可见 Chrome 窗口并快速返回结构化错误，不会等待用户操作导致 JSON-RPC 请求挂住。普通加载超时或登录错误不会自动弹窗。
+
 在 Claude Code 等 MCP 客户端中配置：
 
 ```json
@@ -118,8 +121,9 @@ npm run mcp
 
 | 工具 | 说明 |
 |------|------|
-| `zhihu_open_login_page` | 打开专用浏览器并进入知乎登录页 |
-| `zhihu_login_check` | 检查登录状态；不会主动启动浏览器 |
+| `zhihu_open_login_page` | 打开可见专用浏览器并进入知乎登录页 |
+| `zhihu_human_verification_status` | 检查自动弹出的人机验证浏览器状态；返回 `WAIT_FOR_BROWSER_CLOSE` 或 `RERUN_READY` |
+| `zhihu_login_check` | 检查登录状态；不会主动启动浏览器；确认已登录后会关闭可见浏览器 |
 | `zhihu_get_profile` | 获取当前登录用户信息 |
 | `zhihu_search` | 搜索知乎内容（问题、回答、文章等） |
 | `zhihu_hot_stories` | 获取知乎热榜（缓存 1 分钟） |
@@ -216,7 +220,45 @@ MCP 工具返回 JSON 文本，统一采用类似结构：
 
 ### 人机验证 / 风控
 
-如果触发知乎风控或验证码，请在专用 Chrome 窗口中手动完成验证。工具会尽量检测验证页面并返回提示。
+如果触发知乎风控或验证码，MCP 普通工具会自动打开可见专用 Chrome 窗口，并立即返回 `HUMAN_VERIFICATION_REQUIRED`，不会等待用户关闭浏览器：
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "HUMAN_VERIFICATION_REQUIRED",
+    "message": "已打开浏览器，请手动完成知乎人机验证后重试"
+  },
+  "meta": {
+    "browser_opened": true,
+    "signal": "WAIT_FOR_BROWSER_CLOSE",
+    "should_rerun": false,
+    "status_tool": "zhihu_human_verification_status"
+  }
+}
+```
+
+外部 agent 可以调用 `zhihu_human_verification_status` 轮询状态。用户在浏览器里完成验证并关闭窗口后，该工具会返回：
+
+```json
+{
+  "ok": true,
+  "signal": "RERUN_READY",
+  "event": "VERIFICATION_BROWSER_CLOSED",
+  "should_rerun": true,
+  "browser_running": false
+}
+```
+
+收到 `RERUN_READY` 后即可重跑原工具。若自动打开失败，再手动调用 MCP 工具 `zhihu_open_login_page`（或 CLI `npx zhihu login`）。
+
+### 普通工具不应弹出窗口
+
+MCP 中的 `zhihu_search`、`zhihu_hot_stories`、`zhihu_get_question`、`zhihu_get_answer`、`zhihu_get_article` 等普通读取工具默认使用 headless Chrome。无风控时它们不应弹窗；若检测到人机验证，会自动弹出可见浏览器。若无风控时仍弹出窗口，请确认 MCP 客户端使用的是重新构建后的 `dist/mcp/index.js`：
+
+```bash
+npm run build
+```
 
 ### 重置登录态
 
@@ -273,4 +315,4 @@ CLI / MCP 请求 → ZhihuClient → BrowserHttpClient → BrowserSession → Ch
 
 - CLI/MCP 共享 `ZhihuClient`、`FeedService`、`SearchService`、`AuthService`。
 - 数据获取优先使用知乎 API；API 不可用时尽量使用浏览器页面 DOM 作为 fallback。
-- 登录、验证码和风控处理交给真实 Chrome 窗口，降低纯 HTTP 抓取的不稳定性。
+- 普通读取默认使用 headless Chrome/CDP；登录、验证码和风控处理会切换到可见 Chrome 窗口。

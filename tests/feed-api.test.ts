@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { FeedService } from "../src/core/feed";
+import { BrowserHttpClient } from "../src/core/browser-http-client";
+import { ErrorCodes } from "../src/core/browser/errors";
 
 describe("FeedService browser API paths", () => {
   it("gets the requested number of answers from the API before falling back to DOM", async () => {
@@ -72,6 +74,25 @@ describe("FeedService browser API paths", () => {
       "https://www.zhihu.com/api/v4/articles/1995787568894202157",
       expect.objectContaining({ params: expect.objectContaining({ include: expect.stringContaining("content") }) })
     );
+  });
+});
+
+describe("BrowserHttpClient verification handling", () => {
+  it("throws human verification before reading cookies from an HTML verification page", async () => {
+    const session = {
+      isRunning: () => true,
+      fetch: vi.fn().mockResolvedValue({
+        status: 200,
+        headers: { "content-type": "text/html" },
+        data: "<html><body>人机验证 captcha</body></html>",
+      }),
+      getAllCookies: vi.fn(),
+    };
+    const client = new BrowserHttpClient(session as any);
+
+    await expect(client.get("https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total"))
+      .rejects.toMatchObject({ code: ErrorCodes.HUMAN_VERIFICATION_REQUIRED });
+    expect(session.getAllCookies).not.toHaveBeenCalled();
   });
 });
 

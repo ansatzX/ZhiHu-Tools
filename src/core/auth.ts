@@ -105,9 +105,9 @@ export class AuthService {
     const browserSession = this.client.session;
     if (browserSession) {
       if (typeof browserSession.navigate === "function") {
-        await browserSession.navigate("https://www.zhihu.com/signin");
+        await browserSession.navigate("https://www.zhihu.com/signin", { headless: false });
       } else {
-        await browserSession.start("https://www.zhihu.com/signin");
+        await browserSession.start("https://www.zhihu.com/signin", { headless: false });
       }
     }
   }
@@ -120,9 +120,9 @@ export class AuthService {
     if (browserSession) {
       // CDP 浏览器模式：在控制的 Chrome 中打开登录页
       if (typeof browserSession.navigate === "function") {
-        await browserSession.navigate("https://www.zhihu.com/signin");
+        await browserSession.navigate("https://www.zhihu.com/signin", { headless: false });
       } else {
-        await browserSession.start("https://www.zhihu.com/signin");
+        await browserSession.start("https://www.zhihu.com/signin", { headless: false });
       }
 
       if (onPrompt) {

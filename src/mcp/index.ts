@@ -2,12 +2,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ZhihuClient } from "../core";
+import { getHumanVerificationStatus } from "./error-handler";
+import { runMcpTool } from "./tool-runner";
 
 let zhihu: ZhihuClient | null = null;
 
 function getClient(): ZhihuClient {
   if (!zhihu) {
-    zhihu = new ZhihuClient(undefined, true);
+    zhihu = new ZhihuClient(undefined, true, { headless: true });
   }
   return zhihu;
 }
@@ -58,6 +60,7 @@ const IdInput = z.string()
 
 let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 500;
+const TOOL_TIMEOUT_MS = 45_000;
 
 function rateLimit(): Promise<void> {
   const now = Date.now();
@@ -69,6 +72,45 @@ function rateLimit(): Promise<void> {
   }
   lastRequestTime = now;
   return Promise.resolve();
+}
+
+function textJson(data: any) {
+  return {
+    content: [{
+      type: "text" as const,
+      text: JSON.stringify(data),
+    }],
+  };
+}
+
+function resourceJson(uri: string, data: any) {
+  return {
+    contents: [{
+      uri,
+      mimeType: "application/json",
+      text: JSON.stringify(data),
+    }],
+  };
+}
+
+async function runTool<T>(
+  fn: () => Promise<T>,
+  fallbackCode: string,
+  fallbackMessage: string,
+  verificationUrl?: string
+): Promise<T | ReturnType<typeof textJson>> {
+  const result = await runMcpTool(
+    fn,
+    getClient(),
+    fallbackCode,
+    fallbackMessage,
+    verificationUrl,
+    { toolTimeoutMs: TOOL_TIMEOUT_MS }
+  );
+  if (result && typeof result === "object" && (result as any).ok === false && (result as any).error) {
+    return textJson(result);
+  }
+  return result as T;
 }
 
 // -- 退出清理 --
@@ -121,6 +163,7 @@ server.registerTool(
     const authed = await client.auth.isAuthenticated();
     if (authed) {
       const profile = await client.auth.getProfile();
+      await client.stopBrowser();
       return {
         content: [{
           type: "text",
@@ -151,18 +194,31 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const client = getClient();
-    await enqueue(() => client.auth.openLoginPage());
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          ok: true,
-          data: { message: "浏览器已打开知乎登录页，请在浏览器窗口中完成登录" },
-          meta: { action: "登录完成后可使用 zhihu_login_check 验证状态" },
-        }),
-      }],
-    };
+    return runTool(async () => {
+      const client = getClient();
+      await enqueue(() => client.auth.openLoginPage());
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            data: { message: "浏览器已打开知乎登录页，请在浏览器窗口中完成登录" },
+            meta: { action: "登录完成后可使用 zhihu_login_check 验证状态" },
+          }),
+        }],
+      };
+    }, "OPEN_LOGIN_FAILED", "打开登录页失败", "https://www.zhihu.com/signin");
+  }
+);
+
+server.registerTool(
+  "zhihu_human_verification_status",
+  {
+    description: "检查自动弹出的人机验证浏览器状态。返回 WAIT_FOR_BROWSER_CLOSE 或 RERUN_READY，供 agent 决定是否重跑上一次工具。",
+    inputSchema: {},
+  },
+  async () => {
+    return textJson(getHumanVerificationStatus(getClient()));
   }
 );
 
@@ -173,22 +229,24 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const client = getClient();
-    const profile = await enqueue(() => client.auth.getProfile());
-    if (!profile) {
+    return runTool(async () => {
+      const client = getClient();
+      const profile = await enqueue(() => client.auth.getProfile());
+      if (!profile) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({ ok: false, error: { code: "NOT_LOGGED_IN", message: "获取用户信息失败或未登录" } }),
+          }],
+        };
+      }
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({ ok: false, error: { code: "NOT_LOGGED_IN", message: "获取用户信息失败或未登录" } }),
+          text: JSON.stringify({ ok: true, data: profile }),
         }],
       };
-    }
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({ ok: true, data: profile }),
-      }],
-    };
+    }, "GET_PROFILE_FAILED", "获取用户信息失败", "https://www.zhihu.com/");
   }
 );
 
@@ -206,19 +264,23 @@ server.registerTool(
     const keyword = args.keyword;
     const type = args.type || "general";
     const limit = args.limit || 10;
+    const searchType = type === "question" ? "question" : type === "article" ? "article" : "content";
+    const verificationUrl = `https://www.zhihu.com/search?type=${searchType}&q=${encodeURIComponent(keyword)}`;
 
-    const client = getClient();
-    const results = await enqueue(() => client.search.search(keyword, type, limit));
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          ok: true,
-          data: results,
-          meta: { source: "browser_page", count: results.length },
-        }),
-      }],
-    };
+    return runTool(async () => {
+      const client = getClient();
+      const results = await enqueue(() => client.search.search(keyword, type, limit));
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            data: results,
+            meta: { source: "browser_page", count: results.length },
+          }),
+        }],
+      };
+    }, "SEARCH_FAILED", "搜索失败", verificationUrl);
   }
 );
 
@@ -232,25 +294,27 @@ server.registerTool(
   },
   async (args) => {
     const limit = args.limit || 20;
-    const client = getClient();
-    const stories = await enqueue(() => client.feed.getHotStories());
-    const data = stories.slice(0, limit).map((s: any) => ({
-      title: s.target?.title || "(无标题)",
-      excerpt: s.target?.excerpt || s.detail_text || "",
-      answer_count: s.target?.answer_count || 0,
-      trend: s.trend || 0,
-      url: s.target?.url || "",
-    }));
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          ok: true,
-          data,
-          meta: { total_available: stories.length, returned: data.length },
-        }),
-      }],
-    };
+    return runTool(async () => {
+      const client = getClient();
+      const stories = await enqueue(() => client.feed.getHotStories());
+      const data = stories.slice(0, limit).map((s: any) => ({
+        title: s.target?.title || "(无标题)",
+        excerpt: s.target?.excerpt || s.detail_text || "",
+        answer_count: s.target?.answer_count || 0,
+        trend: s.trend || 0,
+        url: s.target?.url || "",
+      }));
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            data,
+            meta: { total_available: stories.length, returned: data.length },
+          }),
+        }],
+      };
+    }, "HOT_STORIES_FAILED", "获取热榜失败", "https://www.zhihu.com/hot");
   }
 );
 
@@ -264,28 +328,30 @@ server.registerTool(
   },
   async (args) => {
     const limit = args.limit || 10;
-    const client = getClient();
-    const items = await enqueue(() => client.feed.getFeed(limit));
-    const data = items.map((item: any) => ({
-      type: item.type,
-      verb: item.verb,
-      created_time: item.created_time,
-      title: item.target?.title || item.target?.question?.title || "(无标题)",
-      excerpt: item.target?.excerpt || "",
-      url: item.target?.url || "",
-      author: item.target?.author?.name || "匿名",
-      voteup_count: item.target?.voteup_count || 0,
-    }));
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          ok: true,
-          data,
-          meta: { count: data.length, source: "api" },
-        }),
-      }],
-    };
+    return runTool(async () => {
+      const client = getClient();
+      const items = await enqueue(() => client.feed.getFeed(limit));
+      const data = items.map((item: any) => ({
+        type: item.type,
+        verb: item.verb,
+        created_time: item.created_time,
+        title: item.target?.title || item.target?.question?.title || "(无标题)",
+        excerpt: item.target?.excerpt || "",
+        url: item.target?.url || "",
+        author: item.target?.author?.name || "匿名",
+        voteup_count: item.target?.voteup_count || 0,
+      }));
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            data,
+            meta: { count: data.length, source: "api" },
+          }),
+        }],
+      };
+    }, "FEED_FAILED", "获取推荐流失败", "https://www.zhihu.com/");
   }
 );
 
@@ -302,41 +368,43 @@ server.registerTool(
     const questionId = extractNumericId(args.question_id);
     const answerLimit = args.answer_limit ?? 5;
 
-    const client = getClient();
-    const question = await enqueue(() => client.feed.getQuestionDetail(questionId));
-    let answers: any[] = [];
-    if (answerLimit > 0) {
-      answers = await enqueue(() => client.feed.getQuestionAnswers(questionId, 0, answerLimit));
-    }
-    const data = {
-      id: question.id || questionId,
-      title: question.title || "(无标题)",
-      detail: question.detail || null,
-      excerpt: question.excerpt || null,
-      answer_count: question.answer_count ?? null,
-      follower_count: question.follower_count ?? null,
-      answers: answers.map((a: any) => ({
-        id: a.id ?? null,
-        url: a.url || null,
-        api_url: a.api_url || null,
-        voteup_count: a.voteup_count ?? null,
-        comment_count: a.comment_count ?? null,
-        excerpt: a.excerpt || "",
-        author: a.author?.name || "匿名",
-      })),
-      truncated: false,
-    };
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          ok: true,
-          data,
-          warnings: answers.length < answerLimit ? ["返回回答数少于请求数，可能是接口分页或权限限制"] : [],
-          meta: { source: "api", answers_returned: answers.length, answers_requested: answerLimit },
-        }),
-      }],
-    };
+    return runTool(async () => {
+      const client = getClient();
+      const question = await enqueue(() => client.feed.getQuestionDetail(questionId));
+      let answers: any[] = [];
+      if (answerLimit > 0) {
+        answers = await enqueue(() => client.feed.getQuestionAnswers(questionId, 0, answerLimit));
+      }
+      const data = {
+        id: question.id || questionId,
+        title: question.title || "(无标题)",
+        detail: question.detail || null,
+        excerpt: question.excerpt || null,
+        answer_count: question.answer_count ?? null,
+        follower_count: question.follower_count ?? null,
+        answers: answers.map((a: any) => ({
+          id: a.id ?? null,
+          url: a.url || null,
+          api_url: a.api_url || null,
+          voteup_count: a.voteup_count ?? null,
+          comment_count: a.comment_count ?? null,
+          excerpt: a.excerpt || "",
+          author: a.author?.name || "匿名",
+        })),
+        truncated: false,
+      };
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            data,
+            warnings: answers.length < answerLimit ? ["返回回答数少于请求数，可能是接口分页或权限限制"] : [],
+            meta: { source: "api", answers_returned: answers.length, answers_requested: answerLimit },
+          }),
+        }],
+      };
+    }, "QUESTION_FAILED", "获取问题失败", `https://www.zhihu.com/question/${questionId}`);
   }
 );
 
@@ -352,22 +420,24 @@ server.registerTool(
   async (args) => {
     const answerId = extractNumericId(args.answer_id);
     const commentLimit = args.comment_limit ?? 0;
-    const client = getClient();
-    const answer = await enqueue(() => client.feed.getAnswerDetail(Number(answerId)));
-    let comments: any[] = [];
-    if (commentLimit > 0) {
-      comments = await enqueue(() => client.feed.getAnswerComments(answerId, commentLimit));
-    }
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          ok: true,
-          data: { ...answer, comments },
-          meta: { source: "api", comments_returned: comments.length, comments_requested: commentLimit },
-        }),
-      }],
-    };
+    return runTool(async () => {
+      const client = getClient();
+      const answer = await enqueue(() => client.feed.getAnswerDetail(Number(answerId)));
+      let comments: any[] = [];
+      if (commentLimit > 0) {
+        comments = await enqueue(() => client.feed.getAnswerComments(answerId, commentLimit));
+      }
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            data: { ...answer, comments },
+            meta: { source: "api", comments_returned: comments.length, comments_requested: commentLimit },
+          }),
+        }],
+      };
+    }, "ANSWER_FAILED", "获取回答失败", `https://www.zhihu.com/answer/${answerId}`);
   }
 );
 
@@ -383,22 +453,24 @@ server.registerTool(
   async (args) => {
     const articleId = extractNumericId(args.article_id);
     const commentLimit = args.comment_limit ?? 0;
-    const client = getClient();
-    const article = await enqueue(() => client.feed.getArticleDetail(articleId));
-    let comments: any[] = [];
-    if (commentLimit > 0) {
-      comments = await enqueue(() => client.feed.getArticleComments(articleId, commentLimit));
-    }
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          ok: true,
-          data: { ...article, comments },
-          meta: { source: "api", content_truncated: article.content_truncated ?? false, comments_returned: comments.length, comments_requested: commentLimit },
-        }),
-      }],
-    };
+    return runTool(async () => {
+      const client = getClient();
+      const article = await enqueue(() => client.feed.getArticleDetail(articleId));
+      let comments: any[] = [];
+      if (commentLimit > 0) {
+        comments = await enqueue(() => client.feed.getArticleComments(articleId, commentLimit));
+      }
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            ok: true,
+            data: { ...article, comments },
+            meta: { source: "api", content_truncated: article.content_truncated ?? false, comments_returned: comments.length, comments_requested: commentLimit },
+          }),
+        }],
+      };
+    }, "ARTICLE_FAILED", "获取文章失败", `https://zhuanlan.zhihu.com/p/${articleId}`);
   }
 );
 
@@ -409,15 +481,13 @@ server.registerResource(
   "zhihu://hot",
   { description: "知乎热榜内容", mimeType: "application/json" },
   async () => {
-    const client = getClient();
-    const stories = await enqueue(() => client.feed.getHotStories());
-    return {
-      contents: [{
-        uri: "zhihu://hot",
-        mimeType: "application/json",
-        text: JSON.stringify({ ok: true, data: stories }),
-      }],
-    };
+    const result = await runTool(async () => {
+      const client = getClient();
+      const stories = await enqueue(() => client.feed.getHotStories());
+      return resourceJson("zhihu://hot", { ok: true, data: stories });
+    }, "HOT_RESOURCE_FAILED", "获取热榜资源失败", "https://www.zhihu.com/hot");
+    if ("contents" in result) return result;
+    return resourceJson("zhihu://hot", JSON.parse(result.content[0].text));
   }
 );
 
@@ -426,15 +496,13 @@ server.registerResource(
   "zhihu://feed",
   { description: "知乎推荐内容", mimeType: "application/json" },
   async () => {
-    const client = getClient();
-    const items = await enqueue(() => client.feed.getFeed(10));
-    return {
-      contents: [{
-        uri: "zhihu://feed",
-        mimeType: "application/json",
-        text: JSON.stringify({ ok: true, data: items }),
-      }],
-    };
+    const result = await runTool(async () => {
+      const client = getClient();
+      const items = await enqueue(() => client.feed.getFeed(10));
+      return resourceJson("zhihu://feed", { ok: true, data: items });
+    }, "FEED_RESOURCE_FAILED", "获取推荐流资源失败", "https://www.zhihu.com/");
+    if ("contents" in result) return result;
+    return resourceJson("zhihu://feed", JSON.parse(result.content[0].text));
   }
 );
 
@@ -443,15 +511,13 @@ server.registerResource(
   "zhihu://profile",
   { description: "当前登录用户的信息", mimeType: "application/json" },
   async () => {
-    const client = getClient();
-    const profile = await enqueue(() => client.auth.getProfile());
-    return {
-      contents: [{
-        uri: "zhihu://profile",
-        mimeType: "application/json",
-        text: JSON.stringify({ ok: true, data: profile }),
-      }],
-    };
+    const result = await runTool(async () => {
+      const client = getClient();
+      const profile = await enqueue(() => client.auth.getProfile());
+      return resourceJson("zhihu://profile", { ok: true, data: profile });
+    }, "PROFILE_RESOURCE_FAILED", "获取用户资源失败", "https://www.zhihu.com/");
+    if ("contents" in result) return result;
+    return resourceJson("zhihu://profile", JSON.parse(result.content[0].text));
   }
 );
 

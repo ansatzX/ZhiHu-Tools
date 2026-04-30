@@ -18,8 +18,8 @@ describe("AuthService browser login navigation", () => {
   it("awaits cookie clearing before navigating to signin during browser login", async () => {
     const events: string[] = [];
     const session = {
-      async navigate(url: string) {
-        events.push(`navigate:${url}`);
+      async navigate(url: string, options?: { headless?: boolean }) {
+        events.push(`navigate:${url}:${options?.headless}`);
       },
       async start(url?: string) {
         events.push(`start:${url}`);
@@ -47,16 +47,16 @@ describe("AuthService browser login navigation", () => {
 
     expect(profile.name).toBe("Tester");
     expect(events.slice(0, 2)).toEqual(["clear-start", "clear-end"]);
-    expect(events).toContain("navigate:https://www.zhihu.com/signin");
+    expect(events).toContain("navigate:https://www.zhihu.com/signin:false");
     expect(events).not.toContain("start:https://www.zhihu.com/signin");
-    expect(events.indexOf("clear-end")).toBeLessThan(events.indexOf("navigate:https://www.zhihu.com/signin"));
+    expect(events.indexOf("clear-end")).toBeLessThan(events.indexOf("navigate:https://www.zhihu.com/signin:false"));
   });
 
   it("openLoginPage navigates an existing browser session to signin", async () => {
     const events: string[] = [];
     const session = {
-      async navigate(url: string) {
-        events.push(`navigate:${url}`);
+      async navigate(url: string, options?: { headless?: boolean }) {
+        events.push(`navigate:${url}:${options?.headless}`);
       },
       async start(url?: string) {
         events.push(`start:${url}`);
@@ -66,6 +66,6 @@ describe("AuthService browser login navigation", () => {
 
     await auth.openLoginPage();
 
-    expect(events).toEqual(["navigate:https://www.zhihu.com/signin"]);
+    expect(events).toEqual(["navigate:https://www.zhihu.com/signin:false"]);
   });
 });

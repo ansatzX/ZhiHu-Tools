@@ -25,6 +25,7 @@ export class BrowserHttpClient {
     const result = await this.session.fetch(fullUrl, {
       headers: config?.headers,
     });
+    this.throwIfBlockedResponse(result, url);
     await this.updateXsrfToken();
     return this.handleResponse<T>(result, url);
   }
@@ -53,6 +54,7 @@ export class BrowserHttpClient {
       headers,
       body,
     });
+    this.throwIfBlockedResponse(result, url);
     await this.updateXsrfToken();
     return this.handleResponse<T>(result, url);
   }
@@ -143,22 +145,7 @@ export class BrowserHttpClient {
       );
     }
 
-    // 检测 HTML 响应（登录页、验证码页、风控页）
-    if (typeof result.data === "string" && status === 200) {
-      const html = result.data as string;
-      if (html.includes("signin") || html.includes("sign_in") || html.includes("login")) {
-        throw new BrowserSessionError(
-          "请求返回登录页，可能未登录或登录已过期",
-          ErrorCodes.LOGIN_REQUIRED
-        );
-      }
-      if (html.includes("captcha") || html.includes("unhuman") || html.includes("验证")) {
-        throw new BrowserSessionError(
-          "触发知乎人机验证，请在浏览器中手动完成验证",
-          ErrorCodes.HUMAN_VERIFICATION_REQUIRED
-        );
-      }
-    }
+    this.throwIfBlockedResponse(result, url);
 
     // 401: 未授权/未登录
     if (status === 401) {
@@ -170,13 +157,6 @@ export class BrowserHttpClient {
 
     // 403: 禁止访问
     if (status === 403) {
-      const bodyStr = typeof result.data === "string" ? result.data : JSON.stringify(result.data);
-      if (bodyStr.includes("unhuman") || bodyStr.includes("captcha")) {
-        throw new BrowserSessionError(
-          "人机验证拦截: 请在浏览器中手动完成验证",
-          ErrorCodes.HUMAN_VERIFICATION_REQUIRED
-        );
-      }
       throw new BrowserSessionError(
         `知乎 API 返回 403${url ? `: ${url}` : ""}`,
         ErrorCodes.UPSTREAM_FORBIDDEN
@@ -208,6 +188,33 @@ export class BrowserHttpClient {
     }
 
     return result.data as T;
+  }
+
+  private throwIfBlockedResponse(result: { status: number; data: any }, url?: string): void {
+    if (typeof result.data === "string" && result.status === 200) {
+      const html = result.data as string;
+      if (html.includes("signin") || html.includes("sign_in") || html.includes("login")) {
+        throw new BrowserSessionError(
+          "请求返回登录页，可能未登录或登录已过期",
+          ErrorCodes.LOGIN_REQUIRED
+        );
+      }
+      if (html.includes("captcha") || html.includes("unhuman") || html.includes("验证")) {
+        throw new BrowserSessionError(
+          "触发知乎人机验证，请在浏览器中手动完成验证",
+          ErrorCodes.HUMAN_VERIFICATION_REQUIRED
+        );
+      }
+    }
+    if (result.status === 403) {
+      const bodyStr = typeof result.data === "string" ? result.data : JSON.stringify(result.data);
+      if (bodyStr.includes("unhuman") || bodyStr.includes("captcha")) {
+        throw new BrowserSessionError(
+          "人机验证拦截: 请在浏览器中手动完成验证",
+          ErrorCodes.HUMAN_VERIFICATION_REQUIRED
+        );
+      }
+    }
   }
 
   private async updateXsrfToken() {
