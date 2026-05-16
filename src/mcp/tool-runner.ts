@@ -1,13 +1,14 @@
-import { handleMcpToolError, withToolTimeout } from "./error-handler";
+import { handleMcpToolError, withToolTimeout, type McpErrorResult } from "./error-handler";
+import type { ZhihuClient } from "../core";
 
 export async function runMcpTool<T>(
   fn: () => Promise<T>,
-  client: any,
+  client: ZhihuClient,
   fallbackCode: string,
   fallbackMessage: string,
   verificationUrl?: string,
   options?: { toolTimeoutMs?: number }
-): Promise<T | any> {
+): Promise<T | McpErrorResult> {
   try {
     const result = await withToolTimeout(
       fn(),
@@ -15,8 +16,8 @@ export async function runMcpTool<T>(
       `${fallbackCode}_TIMEOUT`,
       `${fallbackMessage}: 工具执行超时`
     );
-    return result as T | any;
-  } catch (err: any) {
+    return result;
+  } catch (err: unknown) {
     return handleMcpToolError(client, err, fallbackCode, fallbackMessage, verificationUrl);
   }
 }

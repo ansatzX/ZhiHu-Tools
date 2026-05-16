@@ -7,10 +7,12 @@ import { findChrome, getProfileDir } from "./chrome-path";
 import { BrowserSessionError, ErrorCodes } from "./errors";
 
 /**
- * 通过 CDP (Chrome DevTools Protocol) 管理浏览器会话
+ * 通过 CDP (Chrome DevTools Protocol) 管理浏览器会话。
  *
- * 启动一个 Chrome 实例（专用 profile），提供 JS 执行和 cookie 访问能力。
- * 所有知乎 API 请求通过浏览器执行 fetch()，而非 Node.js HTTP 客户端。
+ * 核心策略：
+ * - 使用固定端口（9222）+ 专用 profile 目录（~/.zhihu-tools/chrome-profile）
+ * - 启动时先尝试连接已有 Chrome 实例（避免重复启动）
+ * - 首次登录用可见窗口，后续启动用 headless（cookie 在 profile 中持久化）
  */
 export class BrowserSession {
   private chromeProcess: ChildProcess | null = null;
@@ -20,32 +22,65 @@ export class BrowserSession {
   private pageWsUrl: string = "";
   private headless: boolean;
   private currentHeadless: boolean | null = null;
+  private static readonly FIXED_PORT = 9222;
 
   constructor(options?: { headless?: boolean }) {
     this.cdp = new CdpClient();
-    this.port = 0;
+    this.port = BrowserSession.FIXED_PORT;
     this.headless = options?.headless ?? true;
   }
 
   /**
-   * 启动 Chrome 浏览器并连接 CDP
+   * 启动或复用 Chrome 浏览器并连接 CDP。
+   * 优先连接已有实例（固定端口），连接失败再启动新实例。
    */
   async start(targetUrl?: string, options?: { headless?: boolean }): Promise<void> {
     if (this.started) return;
 
+    const headless = options?.headless ?? this.headless;
+    const url = targetUrl || "https://www.zhihu.com/";
+    this.port = BrowserSession.FIXED_PORT;
+
+    // Step 1: 尝试连接已有 Chrome 实例
+    const connected = await this.tryConnectExisting(url);
+    if (connected) return;
+
+    // Step 2: 没有已有实例，启动新 Chrome
+    await this.spawnChrome(url, headless);
+  }
+
+  /**
+   * 尝试连接固定端口上已运行的 Chrome 实例。
+   * 成功返回 true；失败返回 false（说明没有 Chrome 在运行）。
+   */
+  private async tryConnectExisting(url: string): Promise<boolean> {
+    try {
+      const wsUrl = await this.getWsUrlFromPort(this.port);
+      await this.cdp.connect(wsUrl);
+      this.pageWsUrl = wsUrl;
+      this.started = true;
+      this.currentHeadless = null; // 未知，但不影响功能
+      await this.waitForPageLoad();
+      return true;
+    } catch {
+      this.cdp.close();
+      return false;
+    }
+  }
+
+  /**
+   * 启动新的 Chrome 实例。
+   * 仅在确认没有已有实例后才清理锁文件。
+   */
+  private async spawnChrome(url: string, headless: boolean): Promise<void> {
     const chromePath = findChrome();
     const profileDir = getProfileDir();
     fs.mkdirSync(profileDir, { recursive: true });
 
-    // 清理 Chrome profile 锁，防止残留进程阻塞
+    // 仅在启动新实例前清理锁（此时确认没有 Chrome 在运行）
     for (const lock of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
       try { fs.unlinkSync(path.join(profileDir, lock)); } catch {}
     }
-
-    // 使用系统分配的空闲端口
-    this.port = await this.findFreePort();
-    const url = targetUrl || "https://www.zhihu.com/";
-    const headless = options?.headless ?? this.headless;
 
     const args = [
       `--user-data-dir=${profileDir}`,
@@ -60,12 +95,7 @@ export class BrowserSession {
     }
     args.push(url);
 
-    // 默认以 headless 启动；登录入口会显式使用可见窗口。
-    this.chromeProcess = spawn(
-      chromePath,
-      args,
-      { stdio: "ignore" }
-    );
+    this.chromeProcess = spawn(chromePath, args, { stdio: "ignore" });
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -100,9 +130,9 @@ export class BrowserSession {
         ));
       });
 
-      // 等待 Chrome 就绪，然后连接 CDP
+      // 等待 Chrome 就绪（waitForPort 使用 this.port），连接 CDP
       this.waitForPort()
-        .then(() => this.getOrCreatePage(url))
+        .then(() => this.getWsUrlFromPort(this.port))
         .then((wsUrl) => {
           this.pageWsUrl = wsUrl;
           return this.cdp.connect(wsUrl);
@@ -118,7 +148,9 @@ export class BrowserSession {
   }
 
   /**
-   * 导航到指定 URL。如果浏览器尚未启动，则启动浏览器；如果已启动，则复用当前页面。
+   * 导航到指定 URL。
+   * 浏览器未启动时自动启动；已启动则复用当前页面。
+   * 从 headless 切换到可见模式时，停止并重启。
    */
   async navigate(url: string, options?: { headless?: boolean }): Promise<void> {
     if (!this.started) {
@@ -134,9 +166,7 @@ export class BrowserSession {
     await this.waitForPageLoad();
   }
 
-  /**
-   * 打开可见浏览器页面，供登录、验证码和风控处理使用。
-   */
+  /** 打开可见浏览器页面，供登录和人机验证使用。 */
   async openVisiblePage(url = "https://www.zhihu.com/"): Promise<void> {
     await this.navigate(url, { headless: false });
   }
@@ -308,18 +338,28 @@ export class BrowserSession {
    * 浏览器是否正在运行
    */
   isRunning(): boolean {
-    if (this.chromeProcess?.exitCode !== null || this.chromeProcess?.signalCode !== null) {
+    // 连接到已有实例时 chromeProcess 为 null，只需检查 started
+    if (!this.started) return false;
+
+    // 自己启动的实例：检查进程是否还活着
+    if (this.chromeProcess && (this.chromeProcess.exitCode !== null || this.chromeProcess.signalCode !== null)) {
       this.started = false;
       this.chromeProcess = null;
       this.currentHeadless = null;
       return false;
     }
-    return this.started && this.chromeProcess !== null && !this.chromeProcess.killed;
+    // chromeProcess 为 null = 连接外部实例，started 即为 running
+    // chromeProcess 存在 = 自己启动的实例，检查 killed 标志
+    return this.chromeProcess ? !this.chromeProcess.killed : true;
   }
 
   // -- private helpers --
 
   protected waitForPort(timeoutMs = 15000): Promise<void> {
+    return this.waitForPortAt(this.port, timeoutMs);
+  }
+
+  protected waitForPortAt(port: number, timeoutMs = 15000): Promise<void> {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       const tryConnect = () => {
@@ -341,14 +381,10 @@ export class BrowserSession {
             setTimeout(tryConnect, 200);
           }
         });
-        socket.connect(this.port, "127.0.0.1");
+        socket.connect(port, "127.0.0.1");
       };
       tryConnect();
     });
-  }
-
-  protected findFreePort(): Promise<number> {
-    return findFreePort();
   }
 
   protected waitForPageLoad(timeoutMs = 10000): Promise<void> {
@@ -376,27 +412,33 @@ export class BrowserSession {
     });
   }
 
-  protected async getOrCreatePage(url: string): Promise<string> {
+  /**
+   * 从指定端口获取页面的 WebSocket URL。
+   * 优先复用已有的 zhihu 页面，否则复用第一个页面，最后创建新页面。
+   */
+  protected async getWsUrlFromPort(port: number): Promise<string> {
     // 尝试获取已有页面
-    try {
-      const resp = await fetch(`http://127.0.0.1:${this.port}/json`);
-      const pages = await resp.json() as any[];
-      const matchedPage = pages.find(
-        (p: any) => p.url && p.url.includes("zhihu.com")
+    const resp = await fetch(`http://127.0.0.1:${port}/json`);
+    if (!resp.ok) {
+      throw new BrowserSessionError(
+        `Chrome 调试端口 ${port} 无响应`,
+        ErrorCodes.CDP_CONNECT_FAILED
       );
-      const page = matchedPage || pages[0];
-      if (page?.webSocketDebuggerUrl) {
-        return page.webSocketDebuggerUrl;
-      }
-    } catch {
-      // fall through to creating a new page
     }
+    const pages = await resp.json() as Array<{ url?: string; webSocketDebuggerUrl?: string }>;
 
-    // 创建新页面
-    const resp = await fetch(
-      `http://127.0.0.1:${this.port}/json/new?${encodeURIComponent(url)}`
+    // 优先复用已有的知乎页面
+    const zhihuPage = pages.find(p => p.url?.includes("zhihu.com"));
+    if (zhihuPage?.webSocketDebuggerUrl) return zhihuPage.webSocketDebuggerUrl;
+
+    // 复用第一个可用页面
+    if (pages[0]?.webSocketDebuggerUrl) return pages[0].webSocketDebuggerUrl;
+
+    // 没有可用页面，创建新页面
+    const createResp = await fetch(
+      `http://127.0.0.1:${port}/json/new?${encodeURIComponent("about:blank")}`
     );
-    const pageInfo: any = await resp.json();
+    const pageInfo = await createResp.json() as { webSocketDebuggerUrl?: string };
     if (!pageInfo?.webSocketDebuggerUrl) {
       throw new BrowserSessionError(
         "无法获取页面 CDP 端点",
@@ -405,23 +447,4 @@ export class BrowserSession {
     }
     return pageInfo.webSocketDebuggerUrl;
   }
-}
-
-/**
- * 使用系统分配的空闲端口
- */
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      if (addr && typeof addr === "object") {
-        const port = addr.port;
-        server.close(() => resolve(port));
-      } else {
-        server.close(() => reject(new Error("无法获取空闲端口")));
-      }
-    });
-    server.on("error", reject);
-  });
 }

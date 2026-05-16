@@ -19,10 +19,12 @@ export function resetHumanVerificationState(): void {
   lastVerificationStartedAt = 0;
 }
 
-export function isHumanVerificationError(err: any): boolean {
-  if (err?.code === ErrorCodes.HUMAN_VERIFICATION_REQUIRED) return true;
+export function isHumanVerificationError(err: unknown): boolean {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    if ((err as Record<string, unknown>).code === ErrorCodes.HUMAN_VERIFICATION_REQUIRED) return true;
+  }
 
-  const message = String(err?.message || "");
+  const message = err instanceof Error ? err.message : String(err ?? "");
   return (
     message.includes("人机验证") ||
     message.includes("验证码") ||
@@ -31,7 +33,7 @@ export function isHumanVerificationError(err: any): boolean {
   );
 }
 
-export function getHumanVerificationStatus(client: any): Record<string, any> {
+export function getHumanVerificationStatus(client: { browser?: { isRunning?: () => boolean } | null }): Record<string, unknown> {
   const browserRunning = !!client?.browser?.isRunning?.();
   if (!humanVerificationPending) {
     return {
@@ -100,13 +102,14 @@ export async function withToolTimeout<T>(
 }
 
 export async function handleMcpToolError(
-  client: any,
-  err: any,
+  client: { browser?: { openVisiblePage?: (url: string) => Promise<void>; isRunning?: () => boolean } | null; auth?: { openLoginPage?: () => Promise<void> } },
+  err: unknown,
   fallbackCode: string,
   fallbackMessage: string,
   verificationUrl = "https://www.zhihu.com/"
 ): Promise<McpErrorResult> {
-  if (isHumanVerificationError(err)) {
+  const errObj = err instanceof Error ? err : new Error(String(err));
+  if (isHumanVerificationError(errObj)) {
     let browserOpened = false;
     try {
       if (client?.browser?.openVisiblePage) {
@@ -116,7 +119,7 @@ export async function handleMcpToolError(
         await client.auth.openLoginPage();
         browserOpened = true;
       }
-    } catch {
+    } catch (_ignored: unknown) {
       browserOpened = false;
     }
     humanVerificationPending = browserOpened;
@@ -139,7 +142,7 @@ export async function handleMcpToolError(
         action: browserOpened
           ? "请在打开的浏览器窗口中手动完成验证，然后重试当前工具"
           : "请调用 zhihu_open_login_page 打开浏览器并完成验证",
-        original_error: err?.message || fallbackMessage,
+        original_error: errObj.message || fallbackMessage,
       },
     };
   }
@@ -147,8 +150,8 @@ export async function handleMcpToolError(
   return {
     ok: false,
     error: {
-      code: err?.code || fallbackCode,
-      message: err?.message || fallbackMessage,
+      code: ("code" in errObj ? String(errObj.code) : null) || fallbackCode,
+      message: errObj.message || fallbackMessage,
     },
   };
 }
