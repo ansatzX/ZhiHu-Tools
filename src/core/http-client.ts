@@ -1,9 +1,12 @@
 /**
- * @deprecated 此模块为旧版 axios/cookie 路径，已不推荐使用。
- * 当前主线方案为 BrowserHttpClient + Chrome CDP（见 browser-http-client.ts）。
- * 纯 Node HTTP 客户端会被知乎 TLS/浏览器指纹识别拦截。
- * 此模块仅保留用于参考和向后兼容。
+ * @deprecated 旧版 axios/cookie HTTP 客户端。知乎 TLS 指纹识别已使其失效。
+ * 当前主线方案为官方开放平台 API: https://developer.zhihu.com/
+ * 请使用 OfficialApiClient 替代，详见: src/core/official-api.ts
+ *
+ * BrowserHttpClient (browser-http-client.ts) 仍可用于 CDP 浏览器场景，
+ * 但数据获取应使用 official-api.ts。
  */
+
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from "axios";
 import { CookieJar } from "tough-cookie";
 import { FileCookieStore } from "./cookie-store";

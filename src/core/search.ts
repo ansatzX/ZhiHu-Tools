@@ -1,3 +1,12 @@
+/**
+ * @deprecated 此模块使用旧版知乎内部 API (api/v4/search_v3) 和 CDP 浏览器 DOM 提取。
+ * 知乎现已提供官方开放平台 API: https://developer.zhihu.com/
+ * 请使用 OfficialApiClient.zhihuSearch() 或 OfficialApiClient.globalSearch() 替代。
+ * 详见: src/core/official-api.ts
+ *
+ * 此文件仅保留用于参考和向后兼容，所有功能已被 official-api.ts 取代。
+ */
+
 import { ZhihuSearchResult } from "./types";
 import { BrowserSessionError, ErrorCodes } from "./browser/errors";
 

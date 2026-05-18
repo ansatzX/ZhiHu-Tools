@@ -1,3 +1,14 @@
+/**
+ * @deprecated 此模块使用旧版知乎内部 API (api/v3/feed, api/v4/questions 等)。
+ * 知乎现已提供官方开放平台 API: https://developer.zhihu.com/
+ * 请使用 OfficialApiClient 替代。
+ *  - 热榜: OfficialApiClient.hotList()
+ *  - 搜索: OfficialApiClient.zhihuSearch()
+ * 详见: src/core/official-api.ts
+ *
+ * 此文件仅保留用于参考和向后兼容，所有功能已被 official-api.ts 取代。
+ */
+
 import { ZhihuHotStory, ZhihuFeedItem } from "./types";
 import { BrowserSessionError, ErrorCodes } from "./browser/errors";
 import { withCache } from "./cache";
