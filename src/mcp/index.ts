@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { OfficialApiClient, getOfficialClient, OfficialApiError } from "../core";
+import { OfficialApiClient, RotatingOfficialApiClient, OfficialApiError } from "../core";
 import {
   normalizeOfficialHotList,
   normalizeOfficialSearch,
@@ -21,17 +21,27 @@ import {
 // 官方 API 客户端
 // ============================================================
 
-let officialClient: OfficialApiClient | null = null;
+/** Shared interface for single-key and multi-key clients. */
+type ApiClient = OfficialApiClient | RotatingOfficialApiClient;
 
-function getOfficial(): OfficialApiClient {
-  if (!officialClient) {
-    officialClient = getOfficialClient();
+let apiClient: ApiClient | null = null;
+
+function getApiClient(): ApiClient {
+  if (!apiClient) {
+    const raw = (process.env.ZHIHU_ACCESS_SECRET || "").trim();
+    const keys = raw.split(",").map((k) => k.trim()).filter(Boolean);
+    if (keys.length > 1) {
+      apiClient = new RotatingOfficialApiClient(keys);
+    } else {
+      apiClient = new OfficialApiClient({ accessSecret: keys[0] || "" });
+    }
+    console.error(`[zhihu-mcp] initialized with ${keys.length} API key(s)`);
   }
-  return officialClient;
+  return apiClient;
 }
 
-function ensureConfig(): OfficialApiClient | McpStandardError {
-  const api = getOfficial();
+function ensureConfig(): ApiClient | McpStandardError {
+  const api = getApiClient();
   if (!api.isConfigured()) {
     return notConfiguredError();
   }
@@ -82,7 +92,7 @@ function resourceResult(uri: string, data: unknown, mimeType = "application/json
 async function runOfficial<T>(
   tool: string,
   args: unknown,
-  fn: (api: OfficialApiClient) => Promise<unknown>,
+  fn: (api: ApiClient) => Promise<unknown>,
   normalize: (raw: unknown) => OfficialMcpResult<T>
 ) {
   logRequest(tool, args);
@@ -93,7 +103,7 @@ async function runOfficial<T>(
     logResponse(tool, false, Date.now() - started);
     return mcpError(apiOrErr);
   }
-  const api = apiOrErr as OfficialApiClient;
+  const api = apiOrErr as ApiClient;
 
   try {
     const result = normalize(await fn(api));
@@ -221,7 +231,7 @@ server.registerTool(
     logRequest("zhihu_verify_access", {});
     const started = Date.now();
     try {
-      const api = getOfficial();
+      const api = getApiClient();
       if (!api.isConfigured()) {
         return textResult({
           ok: true,
@@ -256,7 +266,7 @@ server.registerResource(
       if ("ok" in apiOrErr) {
         return resourceResult("zhihu://hot", apiOrErr);
       }
-      const result = await (apiOrErr as OfficialApiClient).hotList({ limit: 50 });
+      const result = await (apiOrErr as ApiClient).hotList({ limit: 50 });
       return resourceResult(
         "zhihu://hot",
         officialResourcePayload(normalizeOfficialHotList(result, { limit: 50 }), new Date().toISOString())
@@ -280,7 +290,7 @@ server.registerResource(
     mimeType: "application/json",
   },
   async () => {
-    const api = getOfficial();
+    const api = getApiClient();
     const configured = api.isConfigured();
     let accessValid: boolean | null = null;
     if (configured) {

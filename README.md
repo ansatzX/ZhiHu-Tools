@@ -12,6 +12,18 @@
 export ZHIHU_ACCESS_SECRET="your-access-secret"
 ```
 
+### 多 Key 轮测
+
+支持逗号分隔多个 Access Secret，分散请求到不同 key 上。当某个 key 的接口额度用尽（返回 `Code: 30001`）时，自动切换到下一个可用 key，避免单点额度瓶颈。
+
+```bash
+export ZHIHU_ACCESS_SECRET="key-1,key-2,key-3"
+```
+
+启动时会输出初始化的 key 数量。每个 key 的额度用尽后会被标记为暂时不可用，冷却 5 分钟后自动恢复重试。可通过 `zhihu://health` resource 查看当前服务状态。
+
+多 key 模式对所有工具（`zhihu_search`、`zhihu_hot_list`、`zhihu_zhida`、`zhihu_global_search`）和资源（`zhihu://hot`）均生效，请求按 round-robin 分配到各 key。
+
 ## 安装与构建
 
 ```bash

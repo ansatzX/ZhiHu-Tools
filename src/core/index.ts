@@ -1,5 +1,6 @@
 export * from "./types";
 export { OfficialApiClient, OfficialApiError, getOfficialClient, resetOfficialClient } from "./official-api";
+export { RotatingOfficialApiClient } from "./rotating-client";
 
 /**
  * @deprecated ZhihuClient (浏览器 DOM / 内部 API 路径) 已被 official-api.ts 取代。

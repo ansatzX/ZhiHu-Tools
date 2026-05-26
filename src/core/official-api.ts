@@ -15,7 +15,7 @@
  * 这是知乎当前推荐的官方接入方式，取代旧的内部 API 抓取和浏览器 DOM 提取。
  */
 
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
 import {
   parseOfficialSseEvents,
   selectLastOfficialDataEvent,
@@ -74,17 +74,21 @@ export function assertOfficialSuccess(raw: unknown): void {
  *   1. 构造函数参数
  *   2. 环境变量 ZHIHU_ACCESS_SECRET
  */
+export type CreateHttpFn = (secret: string) => AxiosInstance;
+
 export class OfficialApiClient {
   private http: AxiosInstance;
   private accessSecret: string;
 
-  constructor(options: { accessSecret?: string } = {}) {
+  constructor(options: { accessSecret?: string; createHttp?: CreateHttpFn } = {}) {
     this.accessSecret =
       options.accessSecret ||
       process.env.ZHIHU_ACCESS_SECRET ||
       "";
 
-    this.http = axios.create({
+    this.http = options.createHttp
+      ? options.createHttp(this.accessSecret)
+      : axios.create({
       baseURL: BASE_URL,
       timeout: DEFAULT_TIMEOUT_MS,
       headers: {
