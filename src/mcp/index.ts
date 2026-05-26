@@ -3,6 +3,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { OfficialApiClient, getOfficialClient, OfficialApiError } from "../core";
 import {
+  normalizeOfficialHotList,
+  normalizeOfficialSearch,
+  normalizeOfficialZhida,
+  type OfficialMcpResult,
+} from "../core/official-api-schema";
+import { officialResourcePayload, officialSuccessPayload } from "./official-response";
+import {
   ErrorCode,
   notConfiguredError,
   upstreamError,
@@ -75,7 +82,8 @@ function resourceResult(uri: string, data: unknown, mimeType = "application/json
 async function runOfficial<T>(
   tool: string,
   args: unknown,
-  fn: (api: OfficialApiClient) => Promise<T>
+  fn: (api: OfficialApiClient) => Promise<unknown>,
+  normalize: (raw: unknown) => OfficialMcpResult<T>
 ) {
   logRequest(tool, args);
   const started = Date.now();
@@ -88,9 +96,9 @@ async function runOfficial<T>(
   const api = apiOrErr as OfficialApiClient;
 
   try {
-    const result = await fn(api);
+    const result = normalize(await fn(api));
     logResponse(tool, true, Date.now() - started);
-    return textResult({ ok: true, data: result });
+    return textResult(officialSuccessPayload(result));
   } catch (err: unknown) {
     logResponse(tool, false, Date.now() - started);
     if (err instanceof OfficialApiError) {
@@ -135,13 +143,17 @@ server.registerTool(
     },
   },
   async (args) =>
-    runOfficial("zhihu_search", args, (api) =>
-      api.zhihuSearch({
-        query: args.keyword,
-        type: args.type as "general" | "question" | "answer" | "article",
-        limit: args.limit ?? 10,
-        offset: args.offset ?? 0,
-      })
+    runOfficial(
+      "zhihu_search",
+      args,
+      (api) =>
+        api.zhihuSearch({
+          query: args.keyword,
+          type: args.type as "general" | "question" | "answer" | "article",
+          limit: args.limit ?? 10,
+          offset: args.offset ?? 0,
+        }),
+      (raw) => normalizeOfficialSearch(raw, { limit: args.limit ?? 10 })
     )
 );
 
@@ -155,8 +167,11 @@ server.registerTool(
     },
   },
   async (args) =>
-    runOfficial("zhihu_hot_list", args, (api) =>
-      api.hotList({ limit: args.limit ?? 20, offset: args.offset ?? 0 })
+    runOfficial(
+      "zhihu_hot_list",
+      args,
+      (api) => api.hotList({ limit: args.limit ?? 20, offset: args.offset ?? 0 }),
+      (raw) => normalizeOfficialHotList(raw, { limit: args.limit ?? 20 })
     )
 );
 
@@ -169,7 +184,12 @@ server.registerTool(
     },
   },
   async (args) =>
-    runOfficial("zhihu_zhida", args, (api) => api.zhida({ query: args.query }))
+    runOfficial(
+      "zhihu_zhida",
+      args,
+      (api) => api.zhida({ query: args.query }),
+      normalizeOfficialZhida
+    )
 );
 
 server.registerTool(
@@ -183,15 +203,19 @@ server.registerTool(
     },
   },
   async (args) =>
-    runOfficial("zhihu_global_search", args, (api) =>
-      api.globalSearch({ query: args.keyword, limit: args.limit ?? 10, offset: args.offset ?? 0 })
+    runOfficial(
+      "zhihu_global_search",
+      args,
+      (api) =>
+        api.globalSearch({ query: args.keyword, limit: args.limit ?? 10, offset: args.offset ?? 0 }),
+      (raw) => normalizeOfficialSearch(raw, { limit: args.limit ?? 10 })
     )
 );
 
 server.registerTool(
   "zhihu_verify_access",
   {
-    description: "验证 ZHIHU_ACCESS_SECRET 是否有效。探测热榜 API 返回状态。",
+    description: "验证 ZHIHU_ACCESS_SECRET 是否有效。使用知乎站内搜索 API 做最小探测。",
   },
   async () => {
     logRequest("zhihu_verify_access", {});
@@ -233,11 +257,10 @@ server.registerResource(
         return resourceResult("zhihu://hot", apiOrErr);
       }
       const result = await (apiOrErr as OfficialApiClient).hotList({ limit: 50 });
-      return resourceResult("zhihu://hot", {
-        ok: true,
-        data: result.data,
-        updated: new Date().toISOString(),
-      });
+      return resourceResult(
+        "zhihu://hot",
+        officialResourcePayload(normalizeOfficialHotList(result, { limit: 50 }), new Date().toISOString())
+      );
     } catch (err: unknown) {
       return resourceResult("zhihu://hot", {
         ok: false,

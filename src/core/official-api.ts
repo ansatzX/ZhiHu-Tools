@@ -17,6 +17,10 @@
 
 import axios, { AxiosInstance } from "axios";
 import {
+  parseOfficialSseEvents,
+  selectLastOfficialDataEvent,
+} from "./official-api-schema";
+import {
   OfficialSearchParams,
   OfficialSearchResponse,
   OfficialHotListParams,
@@ -41,6 +45,21 @@ export class OfficialApiError extends Error {
     this.code = code;
     this.status = status;
     this.raw = raw;
+  }
+}
+
+export function assertOfficialSuccess(raw: unknown): void {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  const envelope = raw as Record<string, unknown>;
+  const code = envelope.Code ?? envelope.code;
+  if (typeof code === "number" && code !== 0) {
+    const message =
+      typeof envelope.Message === "string"
+        ? envelope.Message
+        : typeof envelope.message === "string"
+          ? envelope.message
+          : `知乎开放平台返回业务错误: ${code}`;
+    throw new OfficialApiError(message, String(code), 200, raw);
   }
 }
 
@@ -93,7 +112,10 @@ export class OfficialApiClient {
 
     // 响应拦截器: 统一错误处理
     this.http.interceptors.response.use(
-      (response) => response,
+      (response) => {
+        assertOfficialSuccess(response.data);
+        return response;
+      },
       (error) => {
         // Preserve OfficialApiError from request interceptor (e.g., NO_ACCESS_SECRET)
         if (error instanceof OfficialApiError) {
@@ -102,8 +124,8 @@ export class OfficialApiClient {
         if (error.response) {
           const data = error.response.data;
           const message =
-            data?.error?.message || data?.message || error.message;
-          const code = data?.error?.code || String(error.response.status);
+            data?.error?.message || data?.Message || data?.message || error.message;
+          const code = data?.error?.code || data?.Code || data?.code || String(error.response.status);
           throw new OfficialApiError(
             message,
             code,
@@ -197,14 +219,26 @@ export class OfficialApiClient {
   async zhida(
     params: OfficialZhidaParams
   ): Promise<OfficialZhidaResponse> {
-    const resp = await this.http.post<OfficialZhidaResponse>(
+    const resp = await this.http.get<string | OfficialZhidaResponse>(
       "/zhida",
       {
-        Query: params.query,
-        ...(params.stream != null && { Stream: params.stream }),
+        params: {
+          Query: params.query,
+          ...(params.stream != null && { Stream: params.stream }),
+        },
+        responseType: "text",
       }
     );
-    return resp.data;
+    if (typeof resp.data !== "string") {
+      return resp.data;
+    }
+    const events = parseOfficialSseEvents(resp.data) as OfficialZhidaResponse[];
+    const last = selectLastOfficialDataEvent(events) as OfficialZhidaResponse | undefined;
+    if (!last) {
+      throw new OfficialApiError("直答 API 返回空事件流", "EMPTY_ZHIDA_STREAM", 200, resp.data);
+    }
+    assertOfficialSuccess(last);
+    return last;
   }
 
   // ==========================================
@@ -240,11 +274,11 @@ export class OfficialApiClient {
 
   /**
    * 验证 access_secret 是否有效
-   * 调用 hot_list?Limit=1 探测
+   * 调用 zhihu_search 探测，避免热榜日额度耗尽时误判鉴权失败。
    */
   async verifyAccess(): Promise<{ valid: boolean; error?: string }> {
     try {
-      await this.hotList({ limit: 1 });
+      await this.zhihuSearch({ query: "test", limit: 1 });
       return { valid: true };
     } catch (err: unknown) {
       const msg =

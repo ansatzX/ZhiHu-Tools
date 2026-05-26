@@ -41,6 +41,7 @@ vi.mock("fs", async () => {
 vi.mock("../src/core/browser/cdp-client", () => ({
   CdpClient: class {
     async connect() {}
+    async send() {}
     async evaluate() {
       return "complete";
     }
@@ -61,6 +62,14 @@ vi.mock("../src/core/browser/browser-session", async (importOriginal) => {
       return Promise.resolve();
     }
     protected getOrCreatePage(): Promise<string> {
+      return Promise.resolve("ws://127.0.0.1/devtools/page/1");
+    }
+    private wsLookups = 0;
+    protected getWsUrlFromPort(): Promise<string> {
+      this.wsLookups += 1;
+      if (this.wsLookups % 2 === 1) {
+        return Promise.reject(new Error("no existing browser"));
+      }
       return Promise.resolve("ws://127.0.0.1/devtools/page/1");
     }
   }

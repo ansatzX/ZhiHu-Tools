@@ -190,10 +190,11 @@ export interface OfficialPaging {
   totals: number;
 }
 
-/** zhihu_search 响应 */
-export interface OfficialSearchResponse {
-  data: OfficialSearchItem[];
-  paging: OfficialPaging;
+/** 官方 API 通用响应 envelope */
+export interface OfficialApiEnvelope<TData = unknown> {
+  Code: number;
+  Message: string;
+  Data: TData;
 }
 
 /** hot_list 响应条目 */
@@ -210,17 +211,35 @@ export interface OfficialHotListItem {
   [key: string]: unknown;
 }
 
-/** hot_list 响应 */
-export interface OfficialHotListResponse {
-  data: OfficialHotListItem[];
+/** zhihu_search / global_search 响应 Data */
+export interface OfficialSearchData {
+  Items: OfficialSearchItem[];
+  HasMore?: boolean;
+  SearchHashId?: string;
+  Total?: number;
 }
+
+/** hot_list 响应 Data */
+export interface OfficialHotListData {
+  Items: OfficialHotListItem[];
+  Total?: number;
+}
+
+/** zhida 响应 Data */
+export interface OfficialZhidaData {
+  Answer?: string;
+  SessionId?: string;
+  Sources?: unknown[];
+}
+
+/** zhihu_search 响应 */
+export type OfficialSearchResponse = OfficialApiEnvelope<OfficialSearchData>;
+
+/** hot_list 响应 */
+export type OfficialHotListResponse = OfficialApiEnvelope<OfficialHotListData | null>;
 
 /** zhida 响应 */
-export interface OfficialZhidaResponse {
-  answer: string;
-  session_id?: string;
-  sources?: unknown[];
-}
+export type OfficialZhidaResponse = OfficialApiEnvelope<OfficialZhidaData>;
 
-/** global_search 响应：复用 zhihu_search 结构 */
+/** global_search 响应：复用 zhihu_search envelope */
 export type OfficialGlobalSearchResponse = OfficialSearchResponse;

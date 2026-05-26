@@ -108,8 +108,16 @@ export async function handleMcpToolError(
   fallbackMessage: string,
   verificationUrl = "https://www.zhihu.com/"
 ): Promise<McpErrorResult> {
-  const errObj = err instanceof Error ? err : new Error(String(err));
-  if (isHumanVerificationError(errObj)) {
+  const errRecord = typeof err === "object" && err !== null ? err as Record<string, unknown> : {};
+  const errMessage =
+    err instanceof Error
+      ? err.message
+      : typeof errRecord.message === "string"
+        ? errRecord.message
+        : String(err ?? "");
+  const errCode = typeof errRecord.code === "string" ? errRecord.code : undefined;
+
+  if (isHumanVerificationError(err)) {
     let browserOpened = false;
     try {
       if (client?.browser?.openVisiblePage) {
@@ -142,7 +150,7 @@ export async function handleMcpToolError(
         action: browserOpened
           ? "请在打开的浏览器窗口中手动完成验证，然后重试当前工具"
           : "请调用 zhihu_open_login_page 打开浏览器并完成验证",
-        original_error: errObj.message || fallbackMessage,
+        original_error: errMessage || fallbackMessage,
       },
     };
   }
@@ -150,8 +158,8 @@ export async function handleMcpToolError(
   return {
     ok: false,
     error: {
-      code: ("code" in errObj ? String(errObj.code) : null) || fallbackCode,
-      message: errObj.message || fallbackMessage,
+      code: errCode || fallbackCode,
+      message: errMessage || fallbackMessage,
     },
   };
 }

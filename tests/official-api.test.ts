@@ -3,8 +3,8 @@
  *
  * 测试 auth 头生成、参数构造、错误处理，无需真实 API 调用。
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { OfficialApiClient, OfficialApiError } from "../src/core/official-api";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { OfficialApiClient, OfficialApiError, assertOfficialSuccess } from "../src/core/official-api";
 
 describe("OfficialApiClient", () => {
   const OLD_ENV = process.env.ZHIHU_ACCESS_SECRET;
@@ -80,6 +80,23 @@ describe("OfficialApiClient", () => {
     });
   });
 
+  describe("official envelope business errors", () => {
+    it("throws OfficialApiError when the upstream envelope Code is non-zero", () => {
+      expect(() =>
+        assertOfficialSuccess({ Code: 30001, Message: "day limit exceeded", Data: null })
+      ).toThrow(OfficialApiError);
+      expect(() =>
+        assertOfficialSuccess({ Code: 30001, Message: "day limit exceeded", Data: null })
+      ).toThrow("day limit exceeded");
+    });
+
+    it("accepts successful official envelopes", () => {
+      expect(() =>
+        assertOfficialSuccess({ Code: 0, Message: "success", Data: { Items: [] } })
+      ).not.toThrow();
+    });
+  });
+
   describe("verifyAccess with no secret", () => {
     it("throws when making API call without secret", async () => {
       const client = new OfficialApiClient();
@@ -90,6 +107,20 @@ describe("OfficialApiClient", () => {
         code: "NO_ACCESS_SECRET",
         status: 0,
       });
+    });
+  });
+
+  describe("verifyAccess probe", () => {
+    it("uses zhihu_search as the access probe instead of hot_list quota", async () => {
+      const client = new OfficialApiClient({ accessSecret: "test-secret" });
+      const search = vi.fn().mockResolvedValue({ Code: 0, Message: "success", Data: { Items: [] } });
+      const hotList = vi.fn().mockRejectedValue(new OfficialApiError("day limit exceeded", "30001", 200));
+      client.zhihuSearch = search as any;
+      client.hotList = hotList as any;
+
+      await expect(client.verifyAccess()).resolves.toEqual({ valid: true });
+      expect(search).toHaveBeenCalledWith({ query: "test", limit: 1 });
+      expect(hotList).not.toHaveBeenCalled();
     });
   });
 });
