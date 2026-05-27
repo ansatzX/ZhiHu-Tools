@@ -1,9 +1,9 @@
+// @deprecated — legacy browser/CDP tool runner, not used by current MCP mainline
 import { handleMcpToolError, withToolTimeout, type McpErrorResult } from "./error-handler";
-import type { ZhihuClient } from "../core";
 
 export async function runMcpTool<T>(
   fn: () => Promise<T>,
-  client: ZhihuClient,
+  client: any,
   fallbackCode: string,
   fallbackMessage: string,
   verificationUrl?: string,

@@ -163,4 +163,36 @@ describe("RotatingOfficialApiClient", () => {
 
     vi.useRealTimers();
   });
+
+  it("retries on transient network errors", async () => {
+    let attempts = 0;
+    const client = new RotatingOfficialApiClient(["k1"], {
+      createHttp: makeCreateHttp({
+        k1: () => {
+          attempts++;
+          if (attempts <= 1) {
+            throw new OfficialApiError("网络请求失败", "NETWORK_ERROR", 0);
+          }
+          return OK_EMPTY;
+        },
+      }),
+      maxRetries: 2,
+    });
+
+    const result = await client.hotList({ limit: 1 });
+    expect(result.Code).toBe(0);
+    expect(attempts).toBe(2);
+  });
+
+  it("gives up after maxRetries on persistent transient errors", async () => {
+    const client = new RotatingOfficialApiClient(["k1"], {
+      createHttp: makeCreateHttp({
+        k1: () => { throw new OfficialApiError("网络请求失败", "NETWORK_ERROR", 0); },
+      }),
+      maxRetries: 1,
+    });
+
+    await expect(client.hotList({ limit: 1 })).rejects.toThrow(OfficialApiError);
+    await expect(client.hotList({ limit: 1 })).rejects.toMatchObject({ code: "NETWORK_ERROR" });
+  });
 });

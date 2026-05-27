@@ -243,15 +243,18 @@ MCP 工具返回 JSON 文本，成功响应统一为：
 - 官方 API 可能返回业务错误码，即使 HTTP 状态是 200；代码会把 `Code !== 0` 转为 MCP 上游错误。
 - 开放平台额度、权限、接口变更会直接影响返回结果。
 
-## CLI 状态
+## CLI
 
-仓库仍保留 legacy CLI：
+CLI 使用与 MCP 相同的官方 API 客户端，支持多 key 轮测。
 
 ```bash
+npx zhihu verify              # 验证 Access Secret
+npx zhihu search <关键词>      # 站内搜索
+npx zhihu hot                 # 热榜
+npx zhihu global-search <关键词> # 全网搜索
+npx zhihu zhida <提问>         # 直答 Agent
 npx zhihu --help
 ```
-
-CLI 仍走旧的浏览器/CDP/知乎网页登录路径，用于历史兼容；它不是当前 MCP 主线能力。新功能和 MCP 集成应优先使用 `src/core/official-api.ts` 与 `src/mcp/index.ts`。
 
 ## 开发
 
@@ -266,7 +269,9 @@ npm run mcp
 - `tests/official-api-schema.test.ts`：官方 API envelope 到 MCP schema 的 normalization。
 - `tests/mcp-official-response.test.ts`：MCP 工具/resource 成功响应结构。
 - `tests/official-api.test.ts`：鉴权配置、官方业务错误、基础客户端行为。
-- 旧浏览器/CDP 测试作为 legacy 覆盖保留，不定义当前 MCP 主线 schema。
+- `tests/rotating-client.test.ts`：多 key 轮测、额度耗尽重试、冷却恢复、瞬时错误重试。
+- `tests/mcp-tools-schema.test.ts`：MCP 工具输出 schema 端到端验证（search、global_search、hot、zhida、error）。
+- 旧浏览器/CDP 测试作为 legacy 覆盖保留，不定义当前 MCP 主线 schema。详见 `AGENTS.md`。
 
 ## 架构
 

@@ -9,6 +9,7 @@ import {
   type OfficialMcpResult,
 } from "../core/official-api-schema";
 import { officialResourcePayload, officialSuccessPayload } from "./official-response";
+import { JsonlLogger } from "./jsonl-logger";
 import {
   ErrorCode,
   notConfiguredError,
@@ -52,14 +53,18 @@ function ensureConfig(): ApiClient | McpStandardError {
 // 请求日志
 // ============================================================
 
+const jsonl = new JsonlLogger();
+
 function logRequest(tool: string, args: unknown) {
   const ts = new Date().toISOString();
   console.error(`[${ts}] TOOL  ${tool}  args=${JSON.stringify(args)}`);
+  jsonl.toolRequest(tool, args);
 }
 
-function logResponse(tool: string, ok: boolean, durationMs: number) {
+function logResponse(tool: string, ok: boolean, durationMs: number, error?: string) {
   const ts = new Date().toISOString();
   console.error(`[${ts}] ${ok ? "OK" : "ERR"}  ${tool}  ${durationMs}ms`);
+  jsonl.toolResponse(tool, ok, durationMs, error);
 }
 
 // ============================================================
@@ -100,7 +105,7 @@ async function runOfficial<T>(
 
   const apiOrErr = ensureConfig();
   if ("ok" in apiOrErr && apiOrErr.ok === false) {
-    logResponse(tool, false, Date.now() - started);
+    logResponse(tool, false, Date.now() - started, apiOrErr.error?.message);
     return mcpError(apiOrErr);
   }
   const api = apiOrErr as ApiClient;
@@ -110,7 +115,8 @@ async function runOfficial<T>(
     logResponse(tool, true, Date.now() - started);
     return textResult(officialSuccessPayload(result));
   } catch (err: unknown) {
-    logResponse(tool, false, Date.now() - started);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    logResponse(tool, false, Date.now() - started, errMsg);
     if (err instanceof OfficialApiError) {
       return mcpError(upstreamError(err.status, err.message, err.raw));
     }
@@ -263,8 +269,8 @@ server.registerResource(
   async () => {
     try {
       const apiOrErr = ensureConfig();
-      if ("ok" in apiOrErr) {
-        return resourceResult("zhihu://hot", apiOrErr);
+      if ("ok" in apiOrErr && apiOrErr.ok === false) {
+        return resourceResult("zhihu://hot", apiOrErr as McpStandardError);
       }
       const result = await (apiOrErr as ApiClient).hotList({ limit: 50 });
       return resourceResult(

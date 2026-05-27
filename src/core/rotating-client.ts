@@ -16,6 +16,8 @@ import type {
 
 const RATE_LIMIT_CODE = "30001";
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const TRANSIENT_CODES = new Set(["NETWORK_ERROR", "ECONNRESET", "ETIMEDOUT", "ECONNABORTED"]);
+const DEFAULT_MAX_RETRIES = 2;
 
 export interface KeyStatus {
   keyIndex: number;
@@ -27,12 +29,14 @@ export class RotatingOfficialApiClient {
   private exhaustedUntil: Map<number, number> = new Map();
   private roundRobinIndex = 0;
   private cooldownMs: number;
+  private maxRetries: number;
 
   constructor(
     keys: string[],
-    options?: { createHttp?: CreateHttpFn; exhaustedCooldownMs?: number }
+    options?: { createHttp?: CreateHttpFn; exhaustedCooldownMs?: number; maxRetries?: number }
   ) {
     this.cooldownMs = options?.exhaustedCooldownMs ?? DEFAULT_COOLDOWN_MS;
+    this.maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.clients = keys.map(
       (key) =>
         new OfficialApiClient({ accessSecret: key, createHttp: options?.createHttp })
@@ -99,7 +103,7 @@ export class RotatingOfficialApiClient {
       tried.add(idx);
 
       try {
-        return await fn(this.clients[idx]);
+        return await this.tryWithRetry(idx, fn);
       } catch (err: unknown) {
         if (this.isRateLimitError(err)) {
           this.markExhausted(idx);
@@ -112,6 +116,31 @@ export class RotatingOfficialApiClient {
 
     // All keys exhausted — throw the last rate-limit error
     throw lastError;
+  }
+
+  private async tryWithRetry<T>(
+    idx: number,
+    fn: (client: OfficialApiClient) => Promise<T>
+  ): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        return await fn(this.clients[idx]);
+      } catch (err: unknown) {
+        lastErr = err;
+        if (!this.isTransientError(err) || attempt >= this.maxRetries) {
+          throw err;
+        }
+        // Brief backoff before retry: 200ms, 400ms, ...
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      }
+    }
+    throw lastErr;
+  }
+
+  private isTransientError(err: unknown): boolean {
+    if (!(err instanceof OfficialApiError)) return false;
+    return TRANSIENT_CODES.has(err.code);
   }
 
   /** Pick any untried index regardless of exhaustion (fallback). */

@@ -26,3 +26,6 @@ npm-debug.log*
 
 # Test coverage
 coverage/
+
+.scripts/ 
+.state-machine/
