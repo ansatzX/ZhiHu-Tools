@@ -17,10 +17,19 @@ export class JsonlLogger {
 
   constructor(logDir?: string) {
     const dir = logDir ?? DEFAULT_LOG_DIR;
-    fs.mkdirSync(dir, { recursive: true });
-    const date = new Date().toISOString().slice(0, 10);
-    this.logPath = path.join(dir, `zhihu-mcp-${date}.jsonl`);
-    this.stream = fs.createWriteStream(this.logPath, { flags: "a" });
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const date = new Date().toISOString().slice(0, 10);
+      this.logPath = path.join(dir, `zhihu-mcp-${date}.jsonl`);
+      this.stream = fs.createWriteStream(this.logPath, { flags: "a" });
+      // Guard against deferred write-permission errors (e.g. EPERM on first write).
+      this.stream.on("error", () => {
+        this.stream = null;
+      });
+    } catch {
+      this.logPath = "";
+      this.stream = null;
+    }
   }
 
   log(entry: JsonlEntry): void {
